@@ -24,6 +24,7 @@ import fs from 'fs/promises'
 import tokenManager from './token'
 import { updateCachedSpaces } from './spaces'
 import { useLogScope } from '@deta/utils'
+import { initClaudeAgentIPC } from './claudeAgent'
 
 const log = useLogScope('IpcHandlers')
 
@@ -31,6 +32,7 @@ const log = useLogScope('IpcHandlers')
 
 export function setupIpc(backendRootPath: string) {
   setupIpcHandlers(backendRootPath)
+  initClaudeAgentIPC() // Initialize Claude Agent SDK IPC handlers
 }
 
 // Make sure the sender is one of the main windows (main, settings, setup) to prevent spoofing of messages from other windows (very unlikely but still recommended)
@@ -716,5 +718,18 @@ export const ipcSenders = {
     }
 
     IPC_EVENTS_MAIN.updateViewBounds.sendToWebContents(window.webContents, { viewId, bounds })
+  },
+
+  showContextualChat(data: { selectedText: string; pageTitle: string; pageUrl: string }) {
+    log.log('[ContextualChat] showContextualChat called with data:', data)
+    const window = getMainWindow()
+    if (!window) {
+      log.error('[ContextualChat] Main window not found')
+      return
+    }
+
+    log.log('[ContextualChat] Sending IPC to renderer...')
+    IPC_EVENTS_MAIN.showContextualChat.sendToWebContents(window.webContents, data)
+    log.log('[ContextualChat] IPC sent successfully')
   }
 }

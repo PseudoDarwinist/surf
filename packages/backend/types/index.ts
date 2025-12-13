@@ -1,5 +1,7 @@
 export type Provider = 'open-ai' | 'anthropic' | { custom: string }
 
+export type AuthHeaderType = 'bearer' | 'x_api_key'
+
 export type Model =
   | 'gpt-4o'
   | 'gpt-4o-mini'
@@ -14,6 +16,7 @@ export type Model =
         provider: Provider
         max_tokens: number
         vision: boolean
+        auth_header_type?: AuthHeaderType
       }
     }
 

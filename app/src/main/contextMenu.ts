@@ -106,13 +106,29 @@ export function setupContextMenu(window: Electron.WebContents, options: contextM
           }
         },
         {
-          label: 'Search Perplexity for “{selection}”',
+          label: 'Search Perplexity for "{selection}"',
           visible: parameters.selectionText.trim().length > 0,
           click: () => {
             ipcSenders.openURL(
               `https://www.perplexity.ai/?q=${encodeURIComponent(parameters.selectionText)}`,
               true
             )
+          }
+        },
+        defaultActions.separator(),
+        {
+          label: 'Ask Surf about "{selection}"',
+          visible: parameters.selectionText.trim().length > 0,
+          click: () => {
+            console.log('[ContextualChat] Context menu item clicked')
+            console.log('[ContextualChat] selectionText:', parameters.selectionText)
+            console.log('[ContextualChat] titleText:', parameters.titleText)
+            console.log('[ContextualChat] pageURL:', parameters.pageURL)
+            ipcSenders.showContextualChat({
+              selectedText: parameters.selectionText,
+              pageTitle: parameters.titleText || '',
+              pageUrl: parameters.pageURL || ''
+            })
           }
         }
       ]

@@ -15,6 +15,7 @@
 <script lang="ts">
   import { derived, writable, type Writable } from 'svelte/store'
   import {
+    AuthHeaderType,
     BUILT_IN_MODELS,
     BUILT_IN_PROVIDER_DEFINITIONS,
     CUSTOM_MODEL_DEFINITIONS,
@@ -496,6 +497,26 @@
                   on:save={(e) => updateModel(model.id, { custom_key: e.detail })}
                 />
 
+                <div class="form-field-auth">
+                  <div class="form-label-auth">
+                    <label>Auth Header Type</label>
+                    <span class="info-text">How the API key is sent in requests</span>
+                  </div>
+                  <select
+                    class="auth-select"
+                    value={model.auth_header_type ?? AuthHeaderType.Bearer}
+                    on:change={(e) =>
+                      updateModel(model.id, { auth_header_type: e.currentTarget.value })}
+                  >
+                    <option value={AuthHeaderType.Bearer}
+                      >Bearer Token (Authorization: Bearer)</option
+                    >
+                    <option value={AuthHeaderType.XApiKey}
+                      >X-API-KEY Header (for Coforge, etc.)</option
+                    >
+                  </select>
+                </div>
+
                 <FormField
                   label="API Endpoint"
                   placeholder="https://<hostname>/v1/chat/completions"
@@ -763,5 +784,45 @@
     font-weight: 450;
     opacity: 0.5;
     letter-spacing: 0.022em;
+  }
+
+  .form-field-auth {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .form-label-auth {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+
+    label {
+      font-size: 1rem;
+      color: light-dark(#374151, #cbd5f5);
+    }
+
+    .info-text {
+      font-size: 0.75rem;
+      color: light-dark(#6b7280, #94a3b8);
+    }
+  }
+
+  .auth-select {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid light-dark(rgba(0, 0, 0, 0.1), rgba(71, 85, 105, 0.4));
+    border-radius: 8px;
+    background: light-dark(#fff, #1b2435);
+    color: light-dark(#374151, #cbd5f5);
+    font-size: 1rem;
+    font-family: inherit;
+    cursor: pointer;
+    outline: none;
+
+    &:focus {
+      border-color: light-dark(#0284c7, #8192ff);
+    }
   }
 </style>

@@ -480,6 +480,21 @@ const eventHandlers = {
     })
   },
 
+  onShowContextualChat: (
+    callback: (data: { selectedText: string; pageTitle: string; pageUrl: string }) => void
+  ) => {
+    console.log('[ContextualChat] Registering onShowContextualChat listener')
+    return IPC_EVENTS_RENDERER.showContextualChat.on((_, data) => {
+      console.log('[ContextualChat] IPC event received in preload:', data)
+      try {
+        callback(data)
+        console.log('[ContextualChat] Callback executed successfully')
+      } catch (error) {
+        console.error('[ContextualChat] Error in callback:', error)
+      }
+    })
+  },
+
   onWebContentsViewEvent: (callback: (event: WebContentsViewEvent) => void) => {
     return IPC_EVENTS_RENDERER.webContentsViewEvent.on((_, event) => {
       try {
@@ -772,6 +787,15 @@ const api = {
     return IPC_EVENTS_RENDERER.webContentsViewAction.invoke({ viewId, action } as any) as Promise<
       WebContentsViewActionOutputs[T]
     >
+  },
+
+  // Claude Agent SDK API (uses local CLI authentication)
+  claudeAgent: {
+    isAuthenticated: () => ipcRenderer.invoke('claude-agent:is-authenticated'),
+    getAccountInfo: () => ipcRenderer.invoke('claude-agent:get-account-info'),
+    sendPrompt: (prompt: string, options?: any) =>
+      ipcRenderer.invoke('claude-agent:send-prompt', prompt, options),
+    interrupt: (requestId: string) => ipcRenderer.invoke('claude-agent:interrupt', requestId)
   },
 
   ...eventHandlers

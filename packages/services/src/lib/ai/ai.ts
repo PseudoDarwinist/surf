@@ -198,7 +198,8 @@ export class AIService {
           name: model.custom_model_name ?? model.label,
           provider: { custom: providerUrl },
           max_tokens: model.max_tokens || 128_000,
-          vision: model.vision
+          vision: model.vision,
+          auth_header_type: model.auth_header_type
         }
       }
     }
