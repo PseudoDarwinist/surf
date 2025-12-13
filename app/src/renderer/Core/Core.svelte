@@ -34,6 +34,7 @@
   import SummaryPopup from '../components/SummaryPopup.svelte'
   import { extractDOMText, extractTitle } from '../utils/contentExtractor'
   import { getCenterPoint, type Point } from '../utils/lassoUtils'
+  import Overlay from './components/Overlays/Overlay.svelte'
 
   const log = useLogScope('Core')
 
@@ -73,6 +74,20 @@
   let deeperExplanation = ''
   let isLoadingDeeper = false
   let extractedFullText = ''
+
+  // Overlay bounds for toolbar
+  let toolbarOverlayBounds = $state({ x: 0, y: 0, width: 0, height: 0 })
+
+  $effect(() => {
+    if (typeof window !== 'undefined') {
+      toolbarOverlayBounds = {
+        x: 0,
+        y: 0,
+        width: window.innerWidth,
+        height: window.innerHeight
+      }
+    }
+  })
 
   // TODO: move into searchinput directly?
   const handleSearchInput = useDebounce((value: string) => {
@@ -382,18 +397,22 @@
 {/if}
 
 <!-- Circle to Summarize Feature -->
-<DrawingToolbar
-  on:toolChange={(e) => {
-    penToolActive = e.detail.tool === 'pen'
-    if (!penToolActive) {
-      showSummaryPopup = false
-    }
-  }}
-  on:close={() => {
-    penToolActive = false
-    showSummaryPopup = false
-  }}
-/>
+<Overlay bounds={toolbarOverlayBounds}>
+  {#snippet children()}
+    <DrawingToolbar
+      on:toolChange={(e) => {
+        penToolActive = e.detail.tool === 'pen'
+        if (!penToolActive) {
+          showSummaryPopup = false
+        }
+      }}
+      on:close={() => {
+        penToolActive = false
+        showSummaryPopup = false
+      }}
+    />
+  {/snippet}
+</Overlay>
 
 <LassoCanvas
   active={penToolActive}
