@@ -298,4 +298,107 @@ export function initClaudeAgentIPC() {
     }
     return false
   })
+
+  // Quick summarize - optimized for short definitions
+  ipcMain.handle('claude-agent:summarize', async (_event, text: string) => {
+    console.log('[ClaudeAgent] Summarize request, text length:', text.length)
+
+    const sdk = await loadSDK()
+    if (!sdk) {
+      return { content: '', error: sdkLoadError || 'SDK not available' }
+    }
+
+    try {
+      const { query } = sdk
+
+      const systemPrompt = `You are a helpful assistant that provides clear, concise definitions and summaries.
+      When given text, provide a brief 1-2 sentence definition or summary.
+      Be direct and informative. Do not include any preamble.`
+
+      const generator = query({
+        prompt: `Briefly define or summarize this: "${text}"`,
+        options: {
+          maxTurns: 1,
+          maxBudgetUsd: 0.02,
+          permissionMode: 'dontAsk',
+          pathToClaudeCodeExecutable: claudeExecutablePath,
+          allowedTools: [],
+          systemPrompt
+        }
+      })
+
+      let content = ''
+      for await (const message of generator) {
+        if (message.type === 'assistant' && message.message?.content) {
+          for (const block of message.message.content) {
+            if (block.type === 'text' && block.text) {
+              content += block.text
+            }
+          }
+        }
+        if (message.type === 'result' && message.result) {
+          content = message.result
+        }
+      }
+
+      return { content }
+    } catch (error: any) {
+      console.error('[ClaudeAgent] Summarize error:', error.message)
+      return { content: '', error: error.message }
+    }
+  })
+
+  // Deep explanation - for expanded popup
+  ipcMain.handle('claude-agent:explain-deep', async (_event, text: string, context: string) => {
+    console.log('[ClaudeAgent] Deep explain request, text:', text.substring(0, 50))
+
+    const sdk = await loadSDK()
+    if (!sdk) {
+      return { content: '', error: sdkLoadError || 'SDK not available' }
+    }
+
+    try {
+      const { query } = sdk
+
+      const systemPrompt = `You are a knowledgeable assistant providing detailed explanations.
+      When given a term or concept, provide a comprehensive but accessible explanation.
+      Include relevant context, examples, and related concepts.
+      Keep the response under 200 words but be thorough.`
+
+      const prompt = context
+        ? `Explain "${text}" in detail. Context: ${context}`
+        : `Explain "${text}" in detail.`
+
+      const generator = query({
+        prompt,
+        options: {
+          maxTurns: 1,
+          maxBudgetUsd: 0.05,
+          permissionMode: 'dontAsk',
+          pathToClaudeCodeExecutable: claudeExecutablePath,
+          allowedTools: [],
+          systemPrompt
+        }
+      })
+
+      let content = ''
+      for await (const message of generator) {
+        if (message.type === 'assistant' && message.message?.content) {
+          for (const block of message.message.content) {
+            if (block.type === 'text' && block.text) {
+              content += block.text
+            }
+          }
+        }
+        if (message.type === 'result' && message.result) {
+          content = message.result
+        }
+      }
+
+      return { content }
+    } catch (error: any) {
+      console.error('[ClaudeAgent] Deep explain error:', error.message)
+      return { content: '', error: error.message }
+    }
+  })
 }

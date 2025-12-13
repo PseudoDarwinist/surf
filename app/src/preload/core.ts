@@ -795,7 +795,10 @@ const api = {
     getAccountInfo: () => ipcRenderer.invoke('claude-agent:get-account-info'),
     sendPrompt: (prompt: string, options?: any) =>
       ipcRenderer.invoke('claude-agent:send-prompt', prompt, options),
-    interrupt: (requestId: string) => ipcRenderer.invoke('claude-agent:interrupt', requestId)
+    interrupt: (requestId: string) => ipcRenderer.invoke('claude-agent:interrupt', requestId),
+    summarize: (text: string) => ipcRenderer.invoke('claude-agent:summarize', text),
+    explainDeep: (text: string, context?: string) =>
+      ipcRenderer.invoke('claude-agent:explain-deep', text, context || '')
   },
 
   ...eventHandlers
