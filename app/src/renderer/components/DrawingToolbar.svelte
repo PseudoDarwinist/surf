@@ -103,7 +103,7 @@
     bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 9999;
+    z-index: 99999;
     pointer-events: auto;
   }
 
@@ -200,7 +200,7 @@
 
   .pen-active-indicator {
     position: fixed;
-    top: 24px;
+    top: 80px;
     left: 50%;
     transform: translateX(-50%);
     padding: 8px 16px;
@@ -209,7 +209,7 @@
     border-radius: 20px;
     font-size: 14px;
     font-weight: 500;
-    z-index: 9999;
+    z-index: 99999;
     animation: fadeIn 0.2s ease;
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
   }
