@@ -121,7 +121,7 @@
       0 4px 24px rgba(0, 0, 0, 0.12),
       0 1px 4px rgba(0, 0, 0, 0.08),
       inset 0 0 0 1px rgba(0, 0, 0, 0.06);
-    animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    /* animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); */
   }
 
   @keyframes slideUp {

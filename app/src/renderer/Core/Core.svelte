@@ -29,12 +29,7 @@
   import { writable } from 'svelte/store'
 
   // Circle to Summarize components
-  import DrawingToolbar from '../components/DrawingToolbar.svelte'
-  import LassoCanvas from '../components/LassoCanvas.svelte'
-  import SummaryPopup from '../components/SummaryPopup.svelte'
-  import { extractDOMText, extractTitle } from '../utils/contentExtractor'
-  import { getCenterPoint, type Point } from '../utils/lassoUtils'
-  import Overlay from './components/Overlays/Overlay.svelte'
+  import CircleToSummarizeManager from '../components/CircleToSummarizeManager.svelte'
 
   const log = useLogScope('Core')
 
@@ -63,17 +58,7 @@
   const contextualChatPageTitle = writable('')
   const contextualChatPageUrl = writable('')
 
-  // Circle to Summarize state
-  let penToolActive = false
-  let showSummaryPopup = false
-  let summaryPopupPosition = { x: 0, y: 0 }
-  let summaryTitle = ''
-  let summaryContent = ''
-  let isSummaryLoading = false
-  let isSummaryExpanded = false
-  let deeperExplanation = ''
-  let isLoadingDeeper = false
-  let extractedFullText = ''
+  // No local state needed for Circle to Summarize - handled by Manager
 
   // Overlay bounds for toolbar
   let toolbarOverlayBounds = $state({ x: 0, y: 0, width: 0, height: 0 })
@@ -397,101 +382,7 @@
 {/if}
 
 <!-- Circle to Summarize Feature -->
-<Overlay bounds={toolbarOverlayBounds}>
-  {#snippet children()}
-    <DrawingToolbar
-      ontoolchange={(detail) => {
-        penToolActive = detail.tool === 'pen'
-        if (!penToolActive) {
-          showSummaryPopup = false
-        }
-      }}
-      onclose={() => {
-        penToolActive = false
-        showSummaryPopup = false
-      }}
-    />
-  {/snippet}
-</Overlay>
-
-<LassoCanvas
-  active={penToolActive}
-  on:circleComplete={async (e) => {
-    const { bounds, points } = e.detail
-
-    // Get center point for popup position
-    const center = getCenterPoint(points)
-    summaryPopupPosition = { x: center.x, y: bounds.bottom }
-
-    // Extract content from circled region
-    extractedFullText = extractDOMText(bounds)
-    summaryTitle = extractTitle(extractedFullText)
-
-    // Show popup and start loading
-    showSummaryPopup = true
-    isSummaryLoading = true
-    isSummaryExpanded = false
-    deeperExplanation = ''
-
-    // Call AI to summarize
-    try {
-      // @ts-ignore - window.api is injected by preload
-      const result = await window.api.claudeAgent.summarize(extractedFullText)
-      summaryContent = result.content || 'Unable to generate summary.'
-      if (result.error) {
-        summaryContent = `Error: ${result.error}`
-      }
-    } catch (err) {
-      console.error('Summarize error:', err)
-      summaryContent = 'Failed to generate summary. Please try again.'
-    } finally {
-      isSummaryLoading = false
-    }
-
-    // Deactivate pen tool after circle complete
-    penToolActive = false
-  }}
-  on:cancel={() => {
-    penToolActive = false
-  }}
-/>
-
-{#if showSummaryPopup}
-  <SummaryPopup
-    title={summaryTitle}
-    summary={summaryContent}
-    isLoading={isSummaryLoading}
-    position={summaryPopupPosition}
-    isExpanded={isSummaryExpanded}
-    {deeperExplanation}
-    {isLoadingDeeper}
-    on:expand={async () => {
-      if (isLoadingDeeper || deeperExplanation) return
-
-      isSummaryExpanded = true
-      isLoadingDeeper = true
-
-      try {
-        // @ts-ignore - window.api is injected by preload
-        const result = await window.api.claudeAgent.explainDeep(summaryTitle, extractedFullText)
-        deeperExplanation = result.content || 'Unable to generate detailed explanation.'
-        if (result.error) {
-          deeperExplanation = `Error: ${result.error}`
-        }
-      } catch (err) {
-        console.error('Deep explain error:', err)
-        deeperExplanation = 'Failed to generate explanation. Please try again.'
-      } finally {
-        isLoadingDeeper = false
-      }
-    }}
-    on:close={() => {
-      showSummaryPopup = false
-      isSummaryExpanded = false
-      deeperExplanation = ''
-    }}
-  />
-{/if}
+<CircleToSummarizeManager />
 
 <style lang="scss">
   :global(html) {
