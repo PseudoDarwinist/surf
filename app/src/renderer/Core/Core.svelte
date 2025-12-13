@@ -400,13 +400,13 @@
 <Overlay bounds={toolbarOverlayBounds}>
   {#snippet children()}
     <DrawingToolbar
-      on:toolChange={(e) => {
-        penToolActive = e.detail.tool === 'pen'
+      ontoolchange={(detail) => {
+        penToolActive = detail.tool === 'pen'
         if (!penToolActive) {
           showSummaryPopup = false
         }
       }}
-      on:close={() => {
+      onclose={() => {
         penToolActive = false
         showSummaryPopup = false
       }}

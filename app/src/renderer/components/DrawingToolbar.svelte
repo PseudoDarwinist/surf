@@ -1,18 +1,20 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte'
+  // Using Svelte 5 runes mode
 
-  const dispatch = createEventDispatcher<{
-    toolChange: { tool: 'pen' | 'none' }
-    close: void
-  }>()
+  interface Props {
+    ontoolchange?: (detail: { tool: 'pen' | 'none' }) => void
+    onclose?: () => void
+  }
 
-  // Tool state
-  let activeTool: 'pen' | 'none' = 'none'
-  let isExpanded = true
+  let { ontoolchange, onclose }: Props = $props()
+
+  // Tool state using $state
+  let activeTool = $state<'pen' | 'none'>('none')
+  let isExpanded = $state(true)
 
   function selectTool(tool: 'pen' | 'none') {
     activeTool = tool
-    dispatch('toolChange', { tool })
+    ontoolchange?.({ tool })
   }
 
   function toggleExpand() {
@@ -21,7 +23,7 @@
 
   function close() {
     activeTool = 'none'
-    dispatch('close')
+    onclose?.()
   }
 
   // Keyboard shortcut to toggle pen tool
@@ -33,7 +35,7 @@
   }
 </script>
 
-<svelte:window on:keydown={handleKeyDown} />
+<svelte:window onkeydown={handleKeyDown} />
 
 <div class="toolbar-container" class:collapsed={!isExpanded}>
   {#if isExpanded}
@@ -41,7 +43,7 @@
       <button
         class="tool-button"
         class:active={activeTool === 'pen'}
-        on:click={() => selectTool(activeTool === 'pen' ? 'none' : 'pen')}
+        onclick={() => selectTool(activeTool === 'pen' ? 'none' : 'pen')}
         title="Pen Tool (Cmd+D)"
       >
         <svg
@@ -61,7 +63,7 @@
 
       <div class="divider"></div>
 
-      <button class="tool-button close-btn" on:click={close} title="Close">
+      <button class="tool-button close-btn" onclick={close} title="Close">
         <svg
           width="16"
           height="16"
@@ -75,7 +77,7 @@
       </button>
     </div>
   {:else}
-    <button class="expand-button" on:click={toggleExpand} title="Expand Toolbar">
+    <button class="expand-button" onclick={toggleExpand} title="Expand Toolbar">
       <svg
         width="20"
         height="20"
