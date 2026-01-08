@@ -296,6 +296,64 @@ export class BrowserService {
 
       this.log.debug(`Asking question from ${viewId} in ${target}:`, payload, notebookId)
 
+      // CRITICAL FIX: Capture the active tab's resource BEFORE creating the note
+      // When the note opens, the active tab will change and the original page context is lost
+      let activeTabResourceId: string | null = null
+
+      // Debug: Log all mentions to see their types
+      console.log(
+        '[handleTeletypeAsk] ALL mentions:',
+        payload.mentions.map((m) => ({
+          id: m.id,
+          type: m.type,
+          label: m.label,
+          typeOfType: typeof m.type
+        }))
+      )
+
+      const hasActiveTabMention = payload.mentions.some(
+        (m) => m.type === MentionItemType.ACTIVE_TAB || m.id === 'active_tab'
+      )
+      console.log(
+        '[handleTeletypeAsk] hasActiveTabMention:',
+        hasActiveTabMention,
+        'MentionItemType.ACTIVE_TAB:',
+        MentionItemType.ACTIVE_TAB
+      )
+
+      if (hasActiveTabMention) {
+        const currentActiveTab = this.tabsManager.activeTabValue
+        console.log(
+          '[handleTeletypeAsk] currentActiveTab:',
+          currentActiveTab?.id,
+          'typeValue:',
+          currentActiveTab?.view?.typeValue,
+          'ViewType.Page:',
+          ViewType.Page
+        )
+        if (currentActiveTab && currentActiveTab.view.typeValue === ViewType.Page) {
+          this.log.debug('Preparing active tab content before opening note:', currentActiveTab.id)
+          console.log('[handleTeletypeAsk] Preparing active tab...')
+          try {
+            const resource = await this.ai.contextService.preparePageTab(currentActiveTab)
+            if (resource) {
+              activeTabResourceId = resource.id
+              console.log('[handleTeletypeAsk] Captured resource ID:', activeTabResourceId)
+              this.log.debug('Captured active tab resource:', activeTabResourceId)
+            } else {
+              console.log('[handleTeletypeAsk] preparePageTab returned null/undefined')
+            }
+          } catch (err) {
+            console.log('[handleTeletypeAsk] ERROR preparing tab:', err)
+            this.log.error('Failed to prepare active tab:', err)
+          }
+        } else {
+          console.log('[handleTeletypeAsk] Not a Page tab or no active tab')
+        }
+      } else {
+        console.log('[handleTeletypeAsk] No Active Tab mention found in payload')
+      }
+
       if (payload.openTabUrl) {
         this.log.debug('Ask action has openTabUrl, opening URL first:', payload.openTabUrl)
         await this.navigateToUrl(payload.openTabUrl, { target: 'tab' })
@@ -305,6 +363,27 @@ export class BrowserService {
           type: MentionItemType.ACTIVE_TAB,
           icon: 'sparkles'
         })
+      }
+
+      // If we captured the active tab's resource, update the mention with the resource ID
+      // so the context manager can find it even after the active tab changes
+      if (activeTabResourceId) {
+        const activeTabMentionIdx = payload.mentions.findIndex(
+          (m) => m.type === MentionItemType.ACTIVE_TAB || m.id === 'active_tab'
+        )
+        if (activeTabMentionIdx >= 0) {
+          this.log.debug(
+            'Updating Active Tab mention with captured resource ID:',
+            activeTabResourceId
+          )
+          payload.mentions[activeTabMentionIdx] = {
+            ...payload.mentions[activeTabMentionIdx],
+            data: {
+              ...payload.mentions[activeTabMentionIdx].data,
+              capturedResourceId: activeTabResourceId
+            }
+          }
+        }
       }
 
       if (payload.mentions.length === 1) {
@@ -859,6 +938,31 @@ export class BrowserService {
 
   async openAskInSidebar() {
     this.navigateToUrl(`surf://surf/notebook?mention_active_tab=true`, { target: 'sidebar' })
+  }
+
+  /**
+   * Open the current page in Focus Mode for word-by-word reading.
+   * This extracts the article content, saves it, and opens in Focus Mode.
+   */
+  async openFocusMode(url: string, view: WebContentsView) {
+    this.log.debug('Opening Focus Mode for URL:', url)
+
+    try {
+      // Extract and save the article content
+      const { resource } = await extractAndCreateWebResource(this.resourceManager, url, undefined, [
+        ResourceTag.rightClickSave()
+      ])
+
+      this.log.debug('Extracted resource for Focus Mode:', resource.id)
+
+      // Open the saved resource with focus=true to auto-enable Focus Mode
+      const focusUrl = `surf://surf/resource/${resource.id}?focus=true`
+      await this.tabsManager.changeActiveTabURL(focusUrl)
+    } catch (error) {
+      this.log.error('Failed to open Focus Mode:', error)
+      // Fallback: Just navigate to the URL in a saved article view
+      await this.tabsManager.changeActiveTabURL(url)
+    }
   }
 
   /**

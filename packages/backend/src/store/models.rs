@@ -92,6 +92,7 @@ pub enum ResourceTextContentType {
     Image,
     ImageCaptions,
     ImageTags,
+    LibraryDocument,
     Link,
     Note,
     PDF,
@@ -103,6 +104,7 @@ pub enum ResourceTextContentType {
 impl ResourceTextContentType {
     pub fn from_resource_type(resource_type: &str) -> Option<ResourceTextContentType> {
         let content_type = resource_type.to_lowercase();
+        tracing::debug!("from_resource_type: checking type '{}'", content_type);
         match content_type {
             content_type
                 if content_type.starts_with("application/vnd.space.document.space-note") =>
@@ -120,6 +122,9 @@ impl ResourceTextContentType {
             }
             content_type if content_type.starts_with("application/vnd.space.chat-message") => {
                 Some(ResourceTextContentType::ChatMessage)
+            }
+            content_type if content_type.starts_with("application/vnd.space.library-document") => {
+                Some(ResourceTextContentType::LibraryDocument)
             }
             content_type if content_type.starts_with("application/vnd.space.document") => {
                 Some(ResourceTextContentType::Document)
@@ -157,6 +162,7 @@ impl ResourceTextContentType {
             ResourceTextContentType::Image => true,
             ResourceTextContentType::ImageTags => true,
             ResourceTextContentType::ImageCaptions => true,
+            ResourceTextContentType::LibraryDocument => true,
             ResourceTextContentType::YoutubeTranscript => true,
             ResourceTextContentType::GenericText => false,
         }

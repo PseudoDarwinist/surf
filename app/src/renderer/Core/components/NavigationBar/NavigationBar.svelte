@@ -147,6 +147,16 @@
   async function handleAskInSidebar() {
     await browser.openAskInSidebar()
   }
+
+  async function handleFocusMode() {
+    // Get the current URL and open in Focus Mode
+    const currentUrl = $activeLocation
+    if (currentUrl) {
+      // Navigate to Focus Mode view with the current page
+      // Using surf:// protocol to open Focus Mode as a resource view
+      await browser.openFocusMode(currentUrl, view)
+    }
+  }
 </script>
 
 <nav
@@ -250,6 +260,17 @@
       >
         <Icon name="note" size="1.3rem" />
         <span>Ask</span>
+      </Button>
+
+      <!-- Focus Mode button for reading articles word-by-word -->
+      <Button
+        size="md"
+        onclick={handleFocusMode}
+        style="padding-block: 6px;padding-inline: 8px;"
+        title="Read in Focus Mode"
+      >
+        <Icon name="book" size="1.3rem" />
+        <span>Focus</span>
       </Button>
     {/if}
   </NavigationBarGroup>

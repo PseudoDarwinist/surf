@@ -130,6 +130,18 @@ export class MetadataExtractor {
 
   async extractRemote() {
     let html: string
+
+    console.log('[MetadataExtractor] extractRemote called for:', this.url.href)
+    console.log(
+      '[MetadataExtractor] window.api exists:',
+      typeof window !== 'undefined' && typeof (window as any).api !== 'undefined'
+    )
+    console.log(
+      '[MetadataExtractor] fetchHTMLFromRemoteURL exists:',
+      typeof window !== 'undefined' &&
+        typeof (window as any).api?.fetchHTMLFromRemoteURL === 'function'
+    )
+
     if (
       typeof window !== 'undefined' &&
       // @ts-ignore
@@ -137,14 +149,18 @@ export class MetadataExtractor {
       // @ts-ignore
       typeof window.api.fetchHTMLFromRemoteURL === 'function'
     ) {
+      console.log('[MetadataExtractor] Using window.api.fetchHTMLFromRemoteURL')
       // @ts-ignore
       html = await window.api.fetchHTMLFromRemoteURL(this.url.href)
     } else {
+      console.log('[MetadataExtractor] Falling back to direct fetch')
       html = await this.fetchRemoteHTML()
     }
 
+    console.log('[MetadataExtractor] Got HTML, length:', html?.length)
     const document = this.createDocumentFromHTML(html)
     const parsed = this.extractMetadataFromDocument(document)
+    console.log('[MetadataExtractor] Parsed metadata:', parsed)
 
     return parsed
   }

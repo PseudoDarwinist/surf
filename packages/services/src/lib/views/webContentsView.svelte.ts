@@ -1836,6 +1836,42 @@ export class WebContentsView extends EventEmitterBase<WebContentsViewEmitterEven
       return null
     }
 
+    // For YouTube URLs, fetch and append transcript to content
+    const youtubeHostnames = [
+      'youtube.com',
+      'youtu.be',
+      'youtube.de',
+      'www.youtube.com',
+      'www.youtu.be',
+      'www.youtube.de'
+    ]
+
+    try {
+      const urlHost = new URL(url).host
+      if (youtubeHostnames.includes(urlHost)) {
+        this.log.debug('YouTube URL detected, fetching transcript for:', url)
+        const transcript = await this.resourceManager.sffs.getAIYoutubeTranscript(url)
+
+        if (transcript && transcript.transcript) {
+          this.log.debug('YouTube transcript fetched, length:', transcript.transcript.length)
+          const data = detectedResource.data as any
+
+          // Append transcript to existing content
+          const existingContent = data.content_plain || ''
+          const transcriptText = `\n\n--- YouTube Transcript ---\n${transcript.transcript}`
+          data.content_plain = existingContent + transcriptText
+          data.content = (data.content || '') + transcriptText
+
+          this.log.debug('YouTube content updated with transcript')
+        } else {
+          this.log.debug('No YouTube transcript available for:', url)
+        }
+      }
+    } catch (err) {
+      this.log.error('Failed to fetch YouTube transcript:', err)
+      // Don't fail the whole extraction if transcript fails
+    }
+
     return detectedResource
   }
 

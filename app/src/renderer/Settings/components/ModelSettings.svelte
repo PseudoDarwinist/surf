@@ -400,6 +400,38 @@
       </div>
     </Expandable>
 
+    <!-- Claude Agent Provider (CLI Auth - No API Key) -->
+    <Expandable title="Claude Agent (Pro)" expanded={false}>
+      <div slot="pre-title" class="flex items-center gap-2">
+        <Icon name={ProviderIcons[Provider.ClaudeAgent]} />
+      </div>
+
+      <div class="provider-config">
+        <div class="claude-agent-info">
+          <p class="info-highlight">
+            ✅ Uses your local Claude CLI authentication. No API key needed!
+          </p>
+          <p class="info-detail">
+            This model uses your Claude Pro subscription via the local CLI. Run <code
+              >claude login</code
+            > in terminal to authenticate.
+          </p>
+        </div>
+
+        <div class="model-list">
+          <p class="model-list-title">Available Models:</p>
+          <div class="model-chips">
+            {#each getProviderModels(Provider.ClaudeAgent) as model}
+              <div class="model-chip">
+                <Icon name={model.icon} />
+                {model.label}
+              </div>
+            {/each}
+          </div>
+        </div>
+      </div>
+    </Expandable>
+
     <!-- Custom Models Section -->
     <div class="space-y-3">
       <div class="w-full flex items-center justify-between gap-4">
@@ -823,6 +855,32 @@
 
     &:focus {
       border-color: light-dark(#0284c7, #8192ff);
+    }
+  }
+
+  .claude-agent-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+
+    .info-highlight {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: light-dark(#059669, #34d399);
+      font-weight: 500;
+    }
+
+    .info-detail {
+      color: light-dark(#6b7280, #94a3b8);
+      font-size: 0.875rem;
+
+      code {
+        background: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.1));
+        padding: 0.125rem 0.375rem;
+        border-radius: 4px;
+        font-family: monospace;
+      }
     }
   }
 </style>

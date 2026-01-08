@@ -39,6 +39,8 @@
     "electron-drag-click": "^1.0.5",
     "electron-updater": "^6.1.7",
     "iconify-icon": "^2.1.0",
+    "marked": "^17.0.1",
+    "pdf-parse": "^2.4.5",
     "sharp": "^0.33.5",
     "svelte-dnd-list": "^0.1.8",
     "svelte-portal": "^2.2.1"
@@ -86,7 +88,7 @@
     "typescript": "^5.5.0",
     "unzipper": "^0.10.14",
     "uuid": "^9.0.1",
-    "vite": "^7.1.11",
+    "vite": "^6.2.0",
     "vite-plugin-css-injected-by-js": "^3.5.1",
     "vite-plugin-markdown": "^2.2.0",
     "vite-plugin-node-polyfills": "^0.24.0"

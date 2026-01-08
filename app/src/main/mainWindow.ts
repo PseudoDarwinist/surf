@@ -103,7 +103,7 @@ export function createWindow() {
     autoHideMenuBar: true,
     frame: isMac() ? false : true,
     titleBarStyle: 'hidden',
-    // ...(isLinux() ? { icon } : {}),
+    icon: join(__dirname, '../../build/resources/prod/icon.png'),
     trafficLightPosition: { x: 15, y: 13.5 },
     webPreferences: {
       preload: join(__dirname, '../preload/core.js'),
@@ -396,6 +396,10 @@ export function getMainWindow(): BrowserWindow | undefined {
 
 export function getWebContentsViews() {
   return viewManager?.getWebContentsViews() ?? []
+}
+
+export function getViewManager(): WCViewManager | undefined {
+  return viewManager
 }
 
 function setupMainWindowWebContentsHandlers(

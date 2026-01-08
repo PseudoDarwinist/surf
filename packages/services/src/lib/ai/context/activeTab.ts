@@ -71,20 +71,14 @@ export class ContextItemActiveTab extends ContextItemBase {
         return
       }
 
-      const viewManager = this.service.defaultContextManager?.viewManager
-      if (
-        viewManager &&
-        viewManager.sidebarViewOpen &&
-        viewManager.activeSidebarView &&
-        [ViewType.NotebookHome, ViewType.Notebook, ViewType.Resource].includes(
-          viewManager.activeSidebarView.typeValue
-        )
-      ) {
+      // Always extract content for page-type active tabs, regardless of sidebar state
+      // This ensures content is available when the Ask feature is used
+      if (activeTab.view.typeValue === ViewType.Page) {
         this.loading.set(true)
         this.currentTabUrl.set(activeTab.view.urlValue)
         this.debounceUpdateItem()
       } else {
-        this.log.debug('Sidebar is not open to a notebook or resource, skipping update')
+        this.log.debug('Active tab is not a page, clearing item')
         this.item.set(null)
       }
     })
@@ -115,7 +109,10 @@ export class ContextItemActiveTab extends ContextItemBase {
       this.loading.set(true)
 
       const tab = this.service.tabsManager.activeTabValue
+      this.log.debug('updateItem called, active tab:', tab?.id, 'type:', tab?.view.typeValue)
+
       if (!tab) {
+        this.log.debug('updateItem: No active tab found')
         this.item.set(null)
         return null
       }
@@ -125,12 +122,19 @@ export class ContextItemActiveTab extends ContextItemBase {
 
       this.currentTab.set(tab)
 
-      this.log.debug('Updating active tab', tab)
+      this.log.debug(
+        'Updating active tab',
+        tab.id,
+        'typeValue:',
+        tab.view.typeValue,
+        'ViewType.Page:',
+        ViewType.Page
+      )
 
       await tick()
 
       if (tab.view.typeValue === ViewType.Page) {
-        this.log.debug('Preparing page tab', tab)
+        this.log.debug('Preparing page tab', tab.id)
         const resource = await this.service.preparePageTab(tab)
         if (!resource) {
           this.log.error('Failed to prepare page tab', tab.id)
@@ -202,7 +206,12 @@ export class ContextItemActiveTab extends ContextItemBase {
   debounceUpdateItem = useDebounce(() => this.updateItem(), 250)
 
   async getResourceIds(prompt?: string) {
-    this.log.debug('Getting resource ids for active tab')
+    this.log.debug(
+      'getResourceIds called, current item:',
+      this.itemValue,
+      'loading:',
+      this.loadingValue
+    )
     const item = get(this.item)
     if (item) {
       this.log.debug('Found item for active tab, getting resources', item)

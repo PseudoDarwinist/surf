@@ -30,6 +30,7 @@
 
   // Circle to Summarize components
   import CircleToSummarizeManager from '../components/CircleToSummarizeManager.svelte'
+  import { togglePenTool } from '../stores/circleToSummarize'
 
   const log = useLogScope('Core')
 
@@ -258,6 +259,15 @@
       webContents.setZoomFactor(1.0)
       return true
     })
+
+    // Circle to Summarize: Register Cmd+D shortcut in main window
+    // This is needed because the overlay window has its own keyboard context
+    const unsubPenTool = keyboardManager.register('CmdOrCtrl+D', () => {
+      log.debug('Toggling pen tool (CMD+D) from Core.svelte')
+      togglePenTool()
+      return true
+    })
+    unsubs.push(unsubPenTool)
 
     unsubs.push(handlePreloadEvents())
 

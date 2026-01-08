@@ -119,7 +119,8 @@ mod response_types {
         #[derive(Debug, Serialize, Deserialize)]
         pub(crate) struct ChatCompletionChoice {
             pub message: Option<ChatCompletionMessage>,
-            pub index: u32,
+            #[serde(default)]
+            pub index: Option<u32>,  // Made optional - some custom models don't include this field
             pub delta: Option<ChatCompletionChoiceDelta>,
         }
 
@@ -340,6 +341,9 @@ impl Provider {
             "model": model,
             "stream": stream,
             "messages": messages,
+            // Add max_tokens to ensure the model allocates enough tokens for the response
+            // Without this, some custom models may truncate responses prematurely
+            "max_tokens": 16384,
         });
         if let Some(format) = response_format {
             json_obj["response_format"] = serde_json::json!(format);

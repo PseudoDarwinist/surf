@@ -129,7 +129,9 @@ export class ClaudeAgentService {
     this.log.debug('streamPrompt called', { promptLength: prompt.length })
 
     // Check if we have IPC access to the main process
-    if (typeof window !== 'undefined' && (window as any).api?.claudeAgent) {
+    const hasApi = typeof window !== 'undefined' && (window as any).api?.claudeAgent
+
+    if (hasApi) {
       try {
         this.log.debug('Sending prompt via IPC to main process')
         const response = await (window as any).api.claudeAgent.sendPrompt(prompt, options)

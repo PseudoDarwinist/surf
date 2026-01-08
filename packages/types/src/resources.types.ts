@@ -206,7 +206,13 @@ export enum ResourceTypes {
   HISTORY_ENTRY = 'application/vnd.space.history-entry',
 
   CHANNEL_YOUTUBE = 'application/vnd.space.channel.youtube',
-  PLAYLIST_YOUTUBE = 'application/vnd.space.playlist.youtube'
+  PLAYLIST_YOUTUBE = 'application/vnd.space.playlist.youtube',
+
+  // Library document types
+  EPUB = 'application/epub+zip',
+  PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  LIBRARY_DOCUMENT = 'application/vnd.space.library-document'
 }
 
 export const WEB_RESOURCE_TYPES = [
@@ -237,6 +243,60 @@ export interface ResourceDataPDF {
   // TODO: parse more from pdf.js
 }
 
+// Library Document Types
+export interface Chapter {
+  id: string
+  title: string
+  level: number // 1-6 for h1-h6
+  markdown?: string // NEW: Chapter content only (for chapter-based storage)
+  imageResourceIds?: string[] // NEW: Associated image resources
+  startPosition: number // Character offset in full markdown
+  chunkStartIndex: number // Which chunk this chapter starts at
+}
+
+export interface ReadingSession {
+  documentId: string
+  lastReadAt: string // ISO timestamp
+  currentChapterIndex: number
+  currentChunkIndex: number
+  totalChunks: number
+  progressPercent: number // 0-100
+  scrollPosition?: number
+}
+
+export interface DocumentChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+  chapterContext?: string
+  chunkContext?: number
+}
+
+export interface DocumentChatHistory {
+  documentId: string
+  messages: DocumentChatMessage[]
+  lastUpdatedAt: string
+}
+
+export interface LibraryDocumentMetadata {
+  originalFormat: 'pdf' | 'epub' | 'pptx' | 'docx'
+  originalPath?: string
+  title: string
+  author?: string
+  description?: string
+  pageCount?: number
+  coverImageId?: string
+  tableOfContents: Chapter[]
+  readingSession?: ReadingSession
+  chatHistory?: DocumentChatHistory
+}
+
+export interface ResourceDataLibraryDocument {
+  markdown: string
+  metadata: LibraryDocumentMetadata
+}
+
 export interface ResourceDataTypes {
   [ResourceTypes.PDF]: ResourceDataPDF
   [ResourceTypes.POST]: ResourceDataPost
@@ -252,6 +312,7 @@ export interface ResourceDataTypes {
   [ResourceTypes.TABLE_COLUMN]: ResourceDataTableColumn
   [ResourceTypes.ANNOTATION]: ResourceDataAnnotation
   [ResourceTypes.HISTORY_ENTRY]: ResourceDataHistoryEntry
+  [ResourceTypes.LIBRARY_DOCUMENT]: ResourceDataLibraryDocument
   // todo data for drawing and flowchart-fun
 }
 

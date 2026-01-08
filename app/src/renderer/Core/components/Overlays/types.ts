@@ -25,6 +25,14 @@ export type OverlayProps = {
    * @defaultValue false
    */
   autofocus?: boolean
+
+  /**
+   * If true, overlay won't be destroyed on click outside events.
+   * Use for persistent UI elements like toolbars.
+   *
+   * @defaultValue false
+   */
+  persistent?: boolean
 }
 
 export type OverlayPopoverProps = {

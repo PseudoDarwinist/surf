@@ -62,7 +62,9 @@ export const markdownToHtml = async (markdown: string) => {
         span: [['className', 'math', 'math-inline']],
         // Allow all data attributes on surflet tags
         surflet: ['data*'],
-        websearch: ['data*']
+        websearch: ['data*'],
+        // Allow src attribute on images for surf:// protocol
+        img: ['src', 'alt', 'title', 'width', 'height']
       },
       tagNames: [
         ...(defaultSchema.tagNames ?? []),
@@ -71,7 +73,12 @@ export const markdownToHtml = async (markdown: string) => {
         'think',
         'surflet',
         'websearch'
-      ]
+      ],
+      // Allow surf:// protocol for images (used for library document embedded images)
+      protocols: {
+        ...defaultSchema.protocols,
+        src: [...(defaultSchema.protocols?.src ?? []), 'surf']
+      }
     })
     .use(rehypeKatex)
     .use(rehypeProcessCustomComponents)

@@ -553,17 +553,29 @@ const api = {
           const fileBuffer = await fsp.readFile(filePath)
           const fileName = path.basename(filePath)
           const fileType = mime.lookup(fileName.toLowerCase()) || 'application/octet-stream'
-          return new File([fileBuffer as BlobPart], fileName, {
+          const file = new File([fileBuffer as BlobPart], fileName, {
             type: fileType
           })
+          // Return structured object - custom File properties don't survive contextBridge serialization
+          // So we return both the file and its full path explicitly
+          return {
+            file,
+            path: filePath,
+            name: fileName,
+            type: fileType
+          }
         })
       )
 
+      console.log(
+        '[Preload] showOpenDialog returning files with paths:',
+        files.map((f) => f.path)
+      )
       return files
     } catch (err) {
       console.error('Failed to import files: ', err)
+      return null
     }
-    return IPC_EVENTS_RENDERER.showOpenDialog.invoke(options)
   },
 
   getAdblockerState: (partition: string) => {
@@ -643,24 +655,9 @@ const api = {
     IPC_EVENTS_RENDERER.exportResource.send(resourceId)
   },
 
-  fetchHTMLFromRemoteURL: async (url: string, opts?: RequestInit) => {
-    try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36',
-          'Content-Type': 'text/html',
-          ...(opts?.headers ?? {})
-        },
-        ...opts
-      })
-      const html = await response.text()
-
-      return html
-    } catch (error) {
-      throw error
-    }
+  fetchHTMLFromRemoteURL: async (url: string, _opts?: RequestInit) => {
+    // Use IPC to fetch via main process (bypasses CORS restrictions)
+    return ipcRenderer.invoke('fetch-html-from-url', url)
   },
 
   fetchJSON: async (input: string | URL | Request, init?: RequestInit | undefined) => {
@@ -789,6 +786,16 @@ const api = {
     >
   },
 
+  // Show context menu for surf:// images
+  showImageContextMenu: (imageUrl: string, x: number, y: number) => {
+    ipcRenderer.send('show-image-context-menu', { imageUrl, x, y })
+  },
+
+  // Copy image to system clipboard (for pasting to external apps)
+  copyImageToClipboard: (imageUrl: string) => {
+    ipcRenderer.send('copy-image-to-clipboard', imageUrl)
+  },
+
   // Claude Agent SDK API (uses local CLI authentication)
   claudeAgent: {
     isAuthenticated: () => ipcRenderer.invoke('claude-agent:is-authenticated'),
@@ -798,7 +805,60 @@ const api = {
     interrupt: (requestId: string) => ipcRenderer.invoke('claude-agent:interrupt', requestId),
     summarize: (text: string) => ipcRenderer.invoke('claude-agent:summarize', text),
     explainDeep: (text: string, context?: string) =>
-      ipcRenderer.invoke('claude-agent:explain-deep', text, context || '')
+      ipcRenderer.invoke('claude-agent:explain-deep', text, context || ''),
+    // Ask a question about an image (for ChapterPal-style Q&A with vision)
+    askAboutImage: (imageUrl: string, question: string, context?: string) =>
+      ipcRenderer.invoke('claude-agent:ask-about-image', imageUrl, question, context || ''),
+    summarizeWithScreenshot: (
+      bounds: { x: number; y: number; width: number; height: number },
+      activeViewId: string
+    ) => ipcRenderer.invoke('claude-agent:summarize-with-screenshot', bounds, activeViewId),
+
+    // Streaming version - sends chunks as they arrive
+    summarizeWithScreenshotStream: (
+      bounds: { x: number; y: number; width: number; height: number },
+      activeViewId: string
+    ) => ipcRenderer.invoke('claude-agent:summarize-with-screenshot-stream', bounds, activeViewId),
+
+    // Stream event listeners
+    onStreamStart: (callback: (data: { screenshotUrl: string }) => void) => {
+      const handler = (_: any, data: { screenshotUrl: string }) => callback(data)
+      ipcRenderer.on('claude-stream-start', handler)
+      return () => ipcRenderer.removeListener('claude-stream-start', handler)
+    },
+    onStreamChunk: (callback: (chunk: string) => void) => {
+      const handler = (_: any, chunk: string) => callback(chunk)
+      ipcRenderer.on('claude-stream-chunk', handler)
+      return () => ipcRenderer.removeListener('claude-stream-chunk', handler)
+    },
+    onStreamComplete: (callback: (data: { content: string }) => void) => {
+      const handler = (_: any, data: { content: string }) => callback(data)
+      ipcRenderer.on('claude-stream-complete', handler)
+      return () => ipcRenderer.removeListener('claude-stream-complete', handler)
+    },
+    onStreamError: (callback: (error: string) => void) => {
+      const handler = (_: any, error: string) => callback(error)
+      ipcRenderer.on('claude-stream-error', handler)
+      return () => ipcRenderer.removeListener('claude-stream-error', handler)
+    }
+  },
+
+  // Document conversion for My Library feature
+  convertDocument: (filePath: string, options?: { useLLM?: boolean; forceOCR?: boolean }) => {
+    return ipcRenderer.invoke('document:convert', filePath, options)
+  },
+
+  checkMarkerInstalled: () => {
+    return ipcRenderer.invoke('document:check-marker')
+  },
+
+  onDocumentConvertProgress: (
+    callback: (progress: { stage: string; progress: number; message?: string }) => void
+  ) => {
+    const handler = (_: any, progress: { stage: string; progress: number; message?: string }) =>
+      callback(progress)
+    ipcRenderer.on('document:convert-progress', handler)
+    return () => ipcRenderer.removeListener('document:convert-progress', handler)
   },
 
   ...eventHandlers

@@ -6,6 +6,7 @@
   import { isWebResourceType, ResourceTypes, type CitationClickEvent } from '@deta/types'
 
   import TextResource from '../components/TextResource.svelte'
+  import LibraryDocumentReader from '../components/library/LibraryDocumentReader.svelte'
   import { useMessagePortClient } from '@deta/services/messagePort'
   import { useLogScope, wait } from '@deta/utils'
   import { type RouteResult } from '@mateothegreat/svelte5-router'
@@ -32,6 +33,8 @@
     resource &&
       (isWebResourceType(resource.type) || resource.type === ResourceTypes.DOCUMENT_SPACE_NOTE)
   )
+
+  let isLibraryDocument = $derived(resource && resource.type === ResourceTypes.LIBRARY_DOCUMENT)
 
   function handleCitationClick(data: CitationClickEvent) {
     log.debug('Citation clicked:', data)
@@ -76,6 +79,8 @@
         {messagePort}
         onCitationClick={handleCitationClick}
       />
+    {:else if isLibraryDocument}
+      <LibraryDocumentReader {resource} {messagePort} />
     {:else if isImageResource}
       <img src={`surf://surf/resource/${resource.id}?raw`} />
     {:else}

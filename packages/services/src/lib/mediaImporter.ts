@@ -498,7 +498,18 @@ export const createResourcesFromMediaItems = async (
         )
         resource = parsed.resource
       } else if (item.type === 'file') {
-        resource = await resourceManager.createResourceOther(item.data, item.metadata, tags)
+        // Create a copy of the metadata without sourceURI so that the resources internal path is not set to the sourceURI
+        const metadata = { ...item.metadata }
+        delete metadata.sourceURI
+
+        resource = await resourceManager.createResourceOther(item.data, metadata, tags)
+
+        // Update the sourceURI separately so we have a reference to the original file
+        if (item.metadata.sourceURI) {
+          await resourceManager.updateResourceMetadata(resource.id, {
+            sourceURI: item.metadata.sourceURI
+          })
+        }
       } else if (item.type === 'resource') {
         resource = await resourceManager.getResource(item.data)
       } else {

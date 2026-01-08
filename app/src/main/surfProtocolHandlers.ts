@@ -1,11 +1,16 @@
 import { app, net } from 'electron'
 import { isPathSafe, getContentType } from './utils'
 import path, { join } from 'path'
-import { stat, mkdir, rename } from 'fs/promises'
+import { stat, mkdir, rename, readdir } from 'fs/promises'
 import { Worker } from 'worker_threads'
 import { IPC_EVENTS_MAIN } from '@deta/services/ipc'
 import { pathToFileURL } from 'url'
-import { getResourceFileExtension, getResourceFileName, useLogScope } from '@deta/utils'
+import {
+  getResourceFileExtension,
+  getResourceFileName,
+  useLogScope,
+  uuidToBase62
+} from '@deta/utils'
 import { SFFSMain, useSFFSMain } from './sffs'
 import { SFFSRawResource, SFFSResource } from '@deta/types'
 
@@ -14,6 +19,7 @@ interface ImageProcessingParams {
   resourceId: string
   imgPath: string
   cacheDir: string
+  resourceType?: string
 }
 
 interface ImageProcessingOptions {
@@ -181,19 +187,25 @@ const surfProtocolHandleImages = async ({
   requestURL,
   resourceId,
   imgPath,
-  cacheDir
+  cacheDir,
+  resourceType
 }: ImageProcessingParams): Promise<Response> => {
   try {
     await createCacheDirIfNotExists(cacheDir)
     const url = new URL(requestURL)
     const options = extractImageOptions(url)
 
+    // Determine the correct content type - prefer the stored resource type,
+    // fall back to detecting from file path extension
+    const contentType = resourceType || getContentType(imgPath) || 'image/png'
+
     // cache control headers
     const cacheHeaders = {
       'Cache-Control': 'max-age=172800', // Cache for 24 hours
       // TODO: do we ned a hash?
       ETag: `"${resourceId}"`,
-      'Last-Modified': new Date().toUTCString()
+      'Last-Modified': new Date().toUTCString(),
+      'Content-Type': contentType
     }
 
     // return original file if no processing needed
@@ -455,6 +467,30 @@ const fetchResourceFile = async (resourceId: string, resource?: SFFSResource) =>
       return result
     }
 
+    // If no resource metadata available (SFFS not initialized), search for file by base62 ID suffix
+    // Files are named: {name}-{base62Id}.{extension}
+    if (!resource) {
+      try {
+        const base62Id = uuidToBase62(resourceId)
+        const files = await readdir(base)
+        // Find a file that ends with -{base62Id}.{ext}
+        const matchingFile = files.find((f) => {
+          const match = f.match(new RegExp(`-${base62Id}\\.[^.]+$`))
+          return match !== null
+        })
+        if (matchingFile) {
+          const matchedPath = join(base, matchingFile)
+          const matchResult = await fetchFilePath(base, matchedPath)
+          if (matchResult) {
+            log.debug('Found resource file with base62 ID fallback:', matchedPath)
+            return matchResult
+          }
+        }
+      } catch (err) {
+        log.debug('Failed to search for resource by base62 ID:', err)
+      }
+    }
+
     return { response: new Response('Not Found', { status: 404 }), filePath, base }
   } catch (error) {
     log.error('Error fetching resource file:', error)
@@ -467,15 +503,47 @@ const handleSurfResourceDataRequest = async (req: GlobalRequest, resourceId: str
   const resource = await sffs?.readResource(resourceId).catch(() => null)
 
   const { response, filePath, base } = await fetchResourceFile(resourceId, resource ?? undefined)
-  if (
-    response.headers.get('content-type')?.startsWith('image/') &&
-    !response.headers.get('content-type')?.startsWith('image/gif')
-  ) {
+
+  // Determine content type from multiple sources:
+  // 1. Resource's stored type (most reliable when SFFS is available)
+  // 2. File path extension (fallback when SFFS isn't initialized)
+  // 3. Response headers from net.fetch (least reliable)
+  const resourceType = resource?.type
+  const filePathContentType = getContentType(filePath)
+  const responseContentType = response.headers.get('content-type')
+  const contentType = resourceType || filePathContentType || responseContentType
+
+  log.debug('handleSurfResourceDataRequest:', {
+    resourceId,
+    filePath,
+    resourceType,
+    filePathContentType,
+    responseContentType,
+    contentType,
+    responseStatus: response.status
+  })
+
+  const isImage = contentType?.startsWith('image/') && !contentType?.startsWith('image/gif')
+
+  if (isImage) {
     return surfProtocolHandleImages({
       requestURL: req.url,
       resourceId: resourceId,
       imgPath: filePath,
-      cacheDir: join(base, 'cache')
+      cacheDir: join(base, 'cache'),
+      resourceType: contentType || undefined
+    })
+  }
+
+  // If we determined a content type but the response doesn't have proper headers,
+  // create a new response with the correct content-type
+  if (contentType && (!responseContentType || responseContentType === 'application/octet-stream')) {
+    return new Response(response.body, {
+      status: response.status,
+      headers: {
+        ...Object.fromEntries(response.headers),
+        'Content-Type': contentType
+      }
     })
   }
 

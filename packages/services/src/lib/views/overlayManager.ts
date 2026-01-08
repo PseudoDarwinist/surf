@@ -18,6 +18,7 @@ export class Overlay {
   id: string
   window: Window
   bounds: Electron.Rectangle | null
+  persistent: boolean
 
   private log: ScopedLogger
   private manager: OverlayManager
@@ -27,13 +28,14 @@ export class Overlay {
 
   constructor(
     manager: OverlayManager,
-    data: { id: string; window: Window; bounds?: Electron.Rectangle }
+    data: { id: string; window: Window; bounds?: Electron.Rectangle; persistent?: boolean }
   ) {
     this.log = useLogScope('Overlay')
     this.manager = manager
     this.id = data.id
     this.window = data.window
     this.bounds = data.bounds || null
+    this.persistent = data.persistent || false
   }
 
   async init() {
@@ -77,7 +79,10 @@ export class Overlay {
 
     this.unsubs.push(unsubWebContentsEvents)
 
-    window.addEventListener('click', (event) => this.handleClickOutside(event), { passive: true })
+    // Only attach click-outside listener for non-persistent overlays
+    if (!this.persistent) {
+      window.addEventListener('click', (event) => this.handleClickOutside(event), { passive: true })
+    }
   }
 
   async saveBounds(bounds: Electron.Rectangle) {
@@ -171,8 +176,13 @@ export class OverlayManager {
     }
   }
 
-  private async createOverlay(opts?: { bounds?: Electron.Rectangle; hidden?: boolean }) {
+  private async createOverlay(opts?: {
+    bounds?: Electron.Rectangle
+    hidden?: boolean
+    persistent?: boolean
+  }) {
     const overlayId = `overlay-${Date.now()}`
+    this.log.debug('[OverlayManager.createOverlay] Creating overlay:', overlayId, 'opts:', opts)
 
     const overlayWindow = window.open(
       'surf-internal://Core/Overlay/overlay.html',
@@ -181,28 +191,48 @@ export class OverlayManager {
     ) as Window | null
 
     if (!overlayWindow) {
+      this.log.error('[OverlayManager.createOverlay] FAILED to create overlay window!')
       throw new Error('Failed to create overlay web contents')
     }
 
-    this.log.debug(`Creating overlay with ID: ${overlayId}`, overlayWindow)
+    this.log.debug(
+      `[OverlayManager.createOverlay] Overlay window created:`,
+      overlayId,
+      overlayWindow
+    )
 
     const overlay = new Overlay(this, {
       id: overlayId,
       window: overlayWindow,
-      bounds: opts?.bounds
+      bounds: opts?.bounds,
+      persistent: opts?.persistent
     })
 
+    this.log.debug('[OverlayManager.createOverlay] Initializing overlay...')
     await overlay.init()
+    this.log.debug('[OverlayManager.createOverlay] Overlay initialized')
 
     if (!opts?.hidden) {
+      this.log.debug('[OverlayManager.createOverlay] Activating overlay')
       await overlay.activate()
     }
 
     return overlay
   }
 
-  async create(opts?: { bounds?: Electron.Rectangle }) {
-    // Try to get an overlay from the pool
+  async create(opts?: { bounds?: Electron.Rectangle; persistent?: boolean }) {
+    this.log.debug('[OverlayManager.create] Called with opts:', opts)
+
+    // Persistent overlays must be created fresh (not from pool) since they have different behavior
+    if (opts?.persistent) {
+      this.log.debug('[OverlayManager.create] Creating persistent overlay (not pooled)')
+      const overlay = await this.createOverlay(opts)
+      this.log.debug('[OverlayManager.create] Persistent overlay created:', overlay.id)
+      this.overlays.set(overlay.id, overlay)
+      return overlay
+    }
+
+    // Try to get an overlay from the pool for non-persistent overlays
     const pooledOverlay = this.overlayPool.pop()
     if (pooledOverlay) {
       this.log.debug('Reusing overlay from pool', pooledOverlay)

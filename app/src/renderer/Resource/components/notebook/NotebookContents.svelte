@@ -45,7 +45,7 @@
     openResource
   } from '../../handlers/notebookOpenHandlers'
   import NotebookEditor from './NotebookEditor/NotebookEditor.svelte'
-  import { conditionalArrayItem, SearchResourceTags, truncate } from '@deta/utils'
+  import { conditionalArrayItem, SearchResourceTags, truncate, markdownToHtml } from '@deta/utils'
   import { type OpenTarget, type Option, ResourceTypes, SpaceEntryOrigin } from '@deta/types'
   import NotebookSidebarNoteName from './NotebookSidebarNoteName.svelte'
   import {
@@ -56,6 +56,9 @@
   } from '@deta/services/resources'
   import { useMessagePortClient } from '@deta/services/messagePort'
   import { promptForFilesAndTurnIntoResources } from '@deta/services'
+  import LibraryDropZone from './LibraryDropZone.svelte'
+  import LibraryBookCard from './LibraryBookCard.svelte'
+  import type { LibraryDocumentMetadata } from '@deta/types'
 
   let { notebookId }: { notebookId?: string } = $props()
 
@@ -179,6 +182,505 @@
     await promptForFilesAndTurnIntoResources(resourceManager, notebookId)
   }
 
+  // Library document upload handler
+  let isConvertingLibrary = $state(false)
+  let libraryConversionProgress = $state<any>(null)
+
+  const handleUploadLibraryDocument = async (files: File[]) => {
+    if (files.length === 0) {
+      // Trigger file picker
+      // @ts-ignore
+      const selectedFiles = await window.api.showOpenDialog({
+        title: 'Add Documents to Library',
+        buttonLabel: 'Add to Library',
+        filters: [
+          {
+            name: 'Documents',
+            extensions: ['pdf', 'epub', 'pptx', 'docx']
+          }
+        ],
+        properties: ['openFile', 'multiSelections']
+      })
+      if (!selectedFiles || selectedFiles.length === 0) return
+
+      // Process selected files - showOpenDialog returns { file, path, name, type } objects
+      for (const item of selectedFiles) {
+        // New format: item.path is the full path
+        const filePath = item.path
+        console.log('[Library] Selected file path:', filePath)
+
+        if (filePath && typeof filePath === 'string') {
+          await processLibraryFile(filePath)
+        } else {
+          console.error('[Library] Could not get file path from:', item)
+        }
+      }
+    } else {
+      // Process dropped files - Electron adds .path property to File objects
+      for (const file of files) {
+        const filePath = (file as any).path
+        console.log('[Library] Dropped file path:', filePath, 'name:', file.name)
+
+        if (filePath && typeof filePath === 'string') {
+          await processLibraryFile(filePath)
+        } else {
+          console.error(
+            '[Library] Dropped file has no path property. File:',
+            file.name,
+            'Type:',
+            typeof file
+          )
+          // Show user-friendly error
+          libraryConversionProgress = {
+            stage: 'error',
+            progress: 0,
+            message: `Cannot get file path for ${file.name}. Try using the file picker instead.`
+          }
+          setTimeout(() => {
+            libraryConversionProgress = null
+          }, 3000)
+        }
+      }
+    }
+  }
+
+  const processLibraryFile = async (filePath: string) => {
+    try {
+      isConvertingLibrary = true
+      console.log('[Library] Processing file:', filePath)
+
+      // Set up progress listener
+      // @ts-ignore
+      window.api?.onDocumentConvertProgress?.((progress: any) => {
+        libraryConversionProgress = progress
+        console.log('[Library] Conversion progress:', progress)
+      })
+
+      // Convert document (uses MarkItDown if available, falls back to Marker/pdf-parse)
+      let markdown = ''
+      let conversionMetadata: any = {}
+      let extractedImages: any[] = []
+      let figureCaptions: Record<string, string> = {}
+
+      libraryConversionProgress = {
+        stage: 'extracting',
+        progress: 10,
+        message: 'Converting document...'
+      }
+
+      try {
+        // @ts-ignore - IPC call to main process (now uses MarkItDown first)
+        const result = await window.api?.convertDocument?.(filePath)
+
+        if (result && result.markdown) {
+          markdown = result.markdown
+          conversionMetadata = result.metadata || {}
+          extractedImages = result.images || []
+          figureCaptions = conversionMetadata.figureCaptions || {}
+
+          console.log('[Library] Document conversion successful:', {
+            method: result.method,
+            markdownLength: markdown.length,
+            title: conversionMetadata.title,
+            imageCount: extractedImages.length,
+            captionCount: Object.keys(figureCaptions).length
+          })
+        } else {
+          throw new Error('Conversion returned no content')
+        }
+      } catch (conversionError: any) {
+        console.error('[Library] Document conversion failed:', conversionError)
+        libraryConversionProgress = {
+          stage: 'error',
+          progress: 0,
+          message: conversionError?.message || 'Conversion failed'
+        }
+
+        // Create error placeholder
+        const fileName = filePath.split('/').pop() || 'Untitled'
+        markdown = `# ${fileName}\n\n> ⚠️ **Conversion failed**\n>\n> ${conversionError?.message || 'Unknown error'}\n\n*Original file: ${filePath}*`
+      }
+
+      // Process images in markdown - Docling embeds them as base64 inline
+      // We need to extract base64 images and create SFFS resources for them
+      libraryConversionProgress = {
+        stage: 'converting',
+        progress: 40,
+        message: 'Processing embedded images...'
+      }
+
+      // Find all base64 image embeds in markdown: ![alt](data:image/png;base64,...)
+      const base64ImageRegex = /!\[([^\]]*)\]\((data:image\/([^;]+);base64,([^)]+))\)/g
+      let imageIndex = 0
+      let match: RegExpExecArray | null
+
+      // Collect all matches first (regex exec is stateful)
+      const base64Matches: Array<{
+        fullMatch: string
+        alt: string
+        dataUrl: string
+        mimeType: string
+        base64Data: string
+      }> = []
+
+      while ((match = base64ImageRegex.exec(markdown)) !== null) {
+        base64Matches.push({
+          fullMatch: match[0],
+          alt: match[1],
+          dataUrl: match[2],
+          mimeType: `image/${match[3]}`,
+          base64Data: match[4]
+        })
+      }
+
+      console.log(`[Library] Found ${base64Matches.length} embedded base64 images in markdown`)
+
+      // Process each base64 image and create SFFS resources
+      for (const imgMatch of base64Matches) {
+        try {
+          // Convert base64 to blob
+          const byteCharacters = atob(imgMatch.base64Data)
+          const byteNumbers = new Array(byteCharacters.length)
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i)
+          }
+          const byteArray = new Uint8Array(byteNumbers)
+          const blob = new Blob([byteArray], { type: imgMatch.mimeType })
+
+          // Build descriptive name
+          const imageName = imgMatch.alt || `Figure ${imageIndex + 1}`
+
+          // Create resource for this image
+          const imageResource = await resourceManager.createResource(imgMatch.mimeType, blob, {
+            name: imageName,
+            mimeType: imgMatch.mimeType
+          })
+
+          // Replace base64 data URL with surf:// URL in markdown
+          const surfUrl = `surf://surf/resource/${imageResource.id}?raw=true`
+          markdown = markdown.replace(imgMatch.dataUrl, surfUrl)
+
+          console.log(`[Library] Created image resource ${imageIndex + 1}: ${imageResource.id}`)
+          imageIndex++
+        } catch (imgError) {
+          console.warn('[Library] Failed to process embedded image:', imgError)
+        }
+      }
+
+      // Also process any extracted images from files (fallback for non-embedded images)
+      if (extractedImages.length > 0) {
+        console.log(`[Library] Also processing ${extractedImages.length} extracted image files...`)
+
+        for (const img of extractedImages) {
+          if (img.source === 'inline' || !img.path) continue
+
+          try {
+            // @ts-ignore - IPC call to read file as base64
+            const imageData = await window.api?.readFileAsBase64?.(img.path)
+
+            if (imageData) {
+              const ext = img.path.split('.').pop()?.toLowerCase() || 'png'
+              const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`
+
+              const byteCharacters = atob(imageData)
+              const byteNumbers = new Array(byteCharacters.length)
+              for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i)
+              }
+              const byteArray = new Uint8Array(byteNumbers)
+              const blob = new Blob([byteArray], { type: mimeType })
+
+              const imageName = img.caption
+                ? `${img.figureNumber ? `Figure ${img.figureNumber}: ` : ''}${img.caption.substring(0, 50)}`
+                : img.figureNumber
+                  ? `Figure ${img.figureNumber}`
+                  : `Image from page ${img.page || 'unknown'}`
+
+              const imageResource = await resourceManager.createResource(mimeType, blob, {
+                name: imageName,
+                mimeType
+              })
+
+              // Replace file path references if any exist in markdown
+              const surfUrl = `surf://surf/resource/${imageResource.id}?raw=true`
+              const filename = img.path.split('/').pop() || ''
+              if (filename) {
+                const escapedFilename = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                markdown = markdown.replace(
+                  new RegExp(`\\]\\([^)]*${escapedFilename}\\)`, 'g'),
+                  `](${surfUrl})`
+                )
+              }
+            }
+          } catch (imgError) {
+            console.warn('[Library] Failed to process extracted image:', img.path, imgError)
+          }
+        }
+      }
+
+      console.log(`[Library] Processed ${imageIndex} inline images total`)
+
+      // Extract filename for title
+      const fileName = filePath.split('/').pop() || 'Untitled'
+      const title = conversionMetadata.title || fileName.replace(/\.[^.]+$/, '')
+
+      // Determine format from extension
+      const ext = filePath.split('.').pop()?.toLowerCase() as 'pdf' | 'epub' | 'pptx' | 'docx'
+
+      libraryConversionProgress = {
+        stage: 'converting',
+        progress: 60,
+        message: 'Splitting into chapters...'
+      }
+
+      // Split markdown into chapters with per-chapter content
+      // This is the key change for ChapterPal-style chapter isolation
+      const tableOfContents: any[] = []
+
+      try {
+        // Detect which heading level to split on
+        // First try H2 (most common chapter level), then H1, then H3
+        const h1Count = (markdown.match(/^# [^\n]+$/gm) || []).length
+        const h2Count = (markdown.match(/^## [^\n]+$/gm) || []).length
+        const h3Count = (markdown.match(/^### [^\n]+$/gm) || []).length
+
+        // Debug: Show first part of markdown and sample lines that look like headers
+        console.log(`[Library] Markdown length: ${markdown.length}`)
+        console.log(`[Library] First 500 chars of markdown:`, markdown.substring(0, 500))
+        const potentialHeaders = markdown
+          .split('\n')
+          .filter(
+            (line) =>
+              line.trim().length > 0 &&
+              line.trim().length < 100 &&
+              (line.startsWith('#') ||
+                /^[A-Z][A-Z\s]+$/.test(line.trim()) ||
+                /^[IVX]+\./.test(line.trim()))
+          )
+          .slice(0, 20)
+        console.log('[Library] Potential header lines:', potentialHeaders)
+
+        console.log(`[Library] Heading counts: H1=${h1Count}, H2=${h2Count}, H3=${h3Count}`)
+
+        // Choose appropriate split level
+        // If many H2s, split on H2
+        // If few/no H2s but many H1s, split on H1
+        // If mostly H3 (like long books with sub-sections), split on H3
+        let splitPattern: RegExp
+        let headingPattern: RegExp
+        let headingLevel: number
+
+        if (h2Count >= 3) {
+          splitPattern = /(?=^## )/m
+          headingPattern = /^## (.+)$/m
+          headingLevel = 2
+          console.log('[Library] Splitting on H2 headings')
+        } else if (h1Count >= 2) {
+          splitPattern = /(?=^# )/m
+          headingPattern = /^# (.+)$/m
+          headingLevel = 1
+          console.log('[Library] Splitting on H1 headings')
+        } else if (h3Count >= 3) {
+          splitPattern = /(?=^### )/m
+          headingPattern = /^### (.+)$/m
+          headingLevel = 3
+          console.log('[Library] Splitting on H3 headings')
+        } else {
+          // Fallback: Try to find any headers or break on long empty lines
+          console.log('[Library] No clear heading structure, using fallback')
+          splitPattern = /(?=^#{1,3} )/m
+          headingPattern = /^(#{1,3}) (.+)$/m
+          headingLevel = 0 // Mixed
+        }
+
+        const sections = markdown.split(splitPattern)
+        let startPosition = 0
+        let chapterIndex = 0
+
+        for (const section of sections) {
+          // Skip very short sections (likely artifacts)
+          if (section.trim().length < 50) {
+            startPosition += section.length + 1
+            continue
+          }
+
+          // Detect ToC sections (many short lines with page numbers)
+          const lines = section.split('\n').filter((l) => l.trim().length > 0)
+          const tocPatternLines = lines.filter((line) => {
+            const trimmed = line.trim()
+            if (trimmed.length > 80) return false
+            return /\s\d+\s*$/.test(trimmed) || /\.{2,}\s*\d+\s*$/.test(trimmed)
+          })
+          const isToC = lines.length > 3 && tocPatternLines.length > lines.length * 0.5
+
+          if (isToC) {
+            console.log('[Library] Skipping ToC section')
+            startPosition += section.length + 1
+            continue
+          }
+
+          // Try to extract heading title
+          let titleMatch: RegExpMatchArray | null = null
+          let detectedLevel = headingLevel
+
+          if (headingLevel === 0) {
+            // Mixed mode - check for any heading
+            const h1Match = section.match(/^# (.+)$/m)
+            const h2Match = section.match(/^## (.+)$/m)
+            const h3Match = section.match(/^### (.+)$/m)
+            titleMatch = h1Match || h2Match || h3Match
+            detectedLevel = h1Match ? 1 : h2Match ? 2 : 3
+          } else {
+            titleMatch = section.match(headingPattern)
+          }
+
+          if (!titleMatch && chapterIndex > 0) {
+            startPosition += section.length + 1
+            continue
+          }
+
+          const chapterTitle = titleMatch
+            ? titleMatch[1].replace(/\s+\d+\s*$/, '').trim()
+            : 'Introduction'
+
+          // Sanitize the chapter markdown (images are already inline from Docling)
+          const cleanedMarkdown = section
+            .replace(/^\s*\d+\s*$/gm, '') // Remove standalone page numbers
+            .replace(/page\s+\d+\s+(of\s+\d+)?/gi, '') // Remove "Page X of Y"
+            .replace(/(?<!\])\[\d+\](?!\()/g, '') // Remove reference numbers but keep links
+            .replace(/^\s*[-•]\s*$/gm, '') // Remove orphan bullets
+            .replace(/\n{4,}/g, '\n\n\n') // Clean excessive whitespace
+            .trim()
+
+          // Count inline images in this chapter (already have surf:// URLs)
+          const inlineImageCount = (cleanedMarkdown.match(/!\[.*?\]\(surf:\/\//g) || []).length
+          if (inlineImageCount > 0) {
+            console.log(`[Library] Chapter ${chapterIndex} has ${inlineImageCount} inline images`)
+          }
+
+          tableOfContents.push({
+            id: `chapter-${chapterIndex}`,
+            title: chapterTitle,
+            level: detectedLevel || headingLevel || 2,
+            markdown: cleanedMarkdown,
+            imageResourceIds: [], // Images are now inline in markdown, not separate
+            startPosition,
+            chunkStartIndex: chapterIndex
+          })
+
+          console.log(
+            `[Library] Chapter ${chapterIndex}: "${chapterTitle.substring(0, 40)}..." (${cleanedMarkdown.length} chars, ${inlineImageCount} inline images)`
+          )
+          chapterIndex++
+          startPosition += section.length + 1
+        }
+
+        console.log('[Library] Split into', tableOfContents.length, 'chapters')
+      } catch (splitError) {
+        console.warn('[Library] Chapter splitting failed, using fallback:', splitError)
+        // Fallback: create single chapter with all content
+        // Images are already inline in markdown with surf:// URLs
+        tableOfContents.push({
+          id: 'chapter-0',
+          title: title,
+          level: 1,
+          markdown: markdown,
+          imageResourceIds: [],
+          startPosition: 0,
+          chunkStartIndex: 0
+        })
+      }
+
+      // Create library document metadata with per-chapter markdown
+      const libraryMetadata = {
+        originalFormat: ext || 'pdf',
+        originalPath: filePath,
+        title,
+        author: conversionMetadata.author || undefined,
+        pageCount: conversionMetadata.pageCount || undefined,
+        tableOfContents
+      }
+
+      libraryConversionProgress = {
+        stage: 'converting',
+        progress: 90,
+        message: 'Saving to library...'
+      }
+
+      // Create blob from markdown content (full document for compatibility)
+      const contentBlob = new Blob([markdown], { type: 'text/markdown' })
+
+      // Create the resource
+      const resource = await resourceManager.createResource(
+        ResourceTypes.LIBRARY_DOCUMENT,
+        contentBlob,
+        {
+          name: title,
+          sourceURI: `file://${filePath}`
+        },
+        [{ name: 'libraryMetadata', value: JSON.stringify(libraryMetadata) }]
+      )
+
+      console.log(
+        '[Library] Created library document:',
+        resource.id,
+        title,
+        `(${tableOfContents.length} chapters)`
+      )
+
+      libraryConversionProgress = {
+        stage: 'complete',
+        progress: 100,
+        message: `Document added to library! (${tableOfContents.length} chapters)`
+      }
+
+      // Reset after a delay
+      setTimeout(() => {
+        isConvertingLibrary = false
+        libraryConversionProgress = null
+      }, 2000)
+    } catch (error) {
+      console.error('[Library] Failed to process file:', error)
+      libraryConversionProgress = {
+        stage: 'error',
+        progress: 0,
+        message: String(error)
+      }
+      isConvertingLibrary = false
+    }
+  }
+
+  const getLibraryMetadata = (resource: Resource): LibraryDocumentMetadata | null => {
+    // Try to get from tag first
+    const tag = resource?.tags?.find((t: any) => t.name === 'libraryMetadata')
+    if (tag) {
+      try {
+        return JSON.parse(tag.value) as LibraryDocumentMetadata
+      } catch {
+        console.warn('[Library] Failed to parse metadata tag for', resource.id)
+      }
+    }
+
+    // Fallback: create metadata from resource properties
+    // This ensures the card renders even if the tag isn't loaded yet
+    if (resource.type === ResourceTypes.LIBRARY_DOCUMENT) {
+      console.log('[Library] Using fallback metadata for:', resource.id, resource.metadata?.name)
+      return {
+        title: resource.metadata?.name || 'Untitled Document',
+        originalFormat: 'pdf',
+        originalPath: resource.metadata?.sourceURI || '',
+        tableOfContents: []
+      }
+    }
+
+    return null
+  }
+
+  const handleLibraryCardClick = (resource: Resource) => {
+    // Navigate to document detail page
+    handleResourceClick(resource.id, new MouseEvent('click'))
+  }
+
   const handleOpenAsFile = (resourceId: string) => {
     // @ts-ignore
     window.api.openResourceLocally(resourceId)
@@ -230,6 +732,14 @@
         main: 'link',
         add: 'folder.open'
       }
+    },
+    {
+      id: 'library',
+      label: 'My Library',
+      icon: {
+        main: 'book',
+        add: 'folder.open'
+      }
     }
   ])
 
@@ -237,12 +747,14 @@
     if (categoryId === 'notebooks') return handleCreateNotebook
     if (categoryId === 'notes') return handleCreateNote
     if (categoryId === 'sources') return handleUploadFiles
+    if (categoryId === 'library') return () => handleUploadLibraryDocument([])
   }
 
   const getAddButtonTooltip = (categoryId: string) => {
     if (categoryId === 'notebooks') return 'Create Notebook'
     if (categoryId === 'notes') return 'Create Note'
     if (categoryId === 'sources') return 'Import Media'
+    if (categoryId === 'library') return 'Add Document'
   }
 
   const toggleCategoryCollapse = (categoryId: string) => {
@@ -385,6 +897,75 @@
           {@render loadingSnippet()}
         {/if}
       </div>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet libraryList({ resources, searchResults, pagination, loadMore })}
+  {#if searchQuery && searchResults?.length === 0}
+    {@render noResultsSnippet('documents')}
+  {:else}
+    <!-- Always show drop zone at TOP -->
+    <LibraryDropZone
+      onupload={handleUploadLibraryDocument}
+      isConverting={isConvertingLibrary}
+      conversionProgress={libraryConversionProgress}
+    />
+
+    {#if resources.length > 0}
+      <!-- Book cards grid below drop zone -->
+      <div class="library-grid">
+        {#each searchResults ?? resources as resource, i (typeof resource === 'string' ? resource : resource.id + i)}
+          <ResourceLoader {resource}>
+            {#snippet children(resource: Resource)}
+              {@const metadata = getLibraryMetadata(resource)}
+              {#if metadata}
+                <LibraryBookCard
+                  id={resource.id}
+                  {metadata}
+                  onclick={() => handleLibraryCardClick(resource)}
+                  ondelete={() => onDeleteResource(resource)}
+                  {@attach contextMenu({
+                    canOpen: true,
+                    items: [
+                      {
+                        type: 'action',
+                        text: 'Open',
+                        icon: 'book',
+                        action: () => handleLibraryCardClick(resource)
+                      },
+                      {
+                        type: 'action',
+                        text: 'Open in New Tab',
+                        icon: 'tab',
+                        action: () => openResource(resource.id, { target: 'tab', offline: false })
+                      },
+                      {
+                        type: 'separator'
+                      },
+                      {
+                        type: 'action',
+                        kind: 'danger',
+                        text: 'Delete',
+                        icon: 'trash',
+                        action: () => onDeleteResource(resource)
+                      }
+                    ]
+                  })}
+                />
+              {/if}
+            {/snippet}
+          </ResourceLoader>
+        {/each}
+      </div>
+
+      {#if pagination.hasMore && !searchQuery}
+        <div class="load-more-trigger" use:attachLoadMore={loadMore}>
+          {#if pagination.isLoadingMore}
+            {@render loadingSnippet()}
+          {/if}
+        </div>
+      {/if}
     {/if}
   {/if}
 {/snippet}
@@ -541,6 +1122,26 @@
                 >
                   {#snippet children(loaderData)}
                     {@render sourcesList(loaderData)}
+                  {/snippet}
+                  {#snippet loading()}
+                    {@render loadingSnippet()}
+                  {/snippet}
+                </SurfLoader>
+              {:else if category.id === 'library'}
+                <SurfLoader
+                  pageSize={20}
+                  {notebookId}
+                  tags={[SearchResourceTags.ResourceType(ResourceTypes.LIBRARY_DOCUMENT, 'eq')]}
+                  search={{
+                    query: searchQuery,
+                    tags: [SearchResourceTags.ResourceType(ResourceTypes.LIBRARY_DOCUMENT, 'eq')],
+                    parameters: {
+                      semanticSearch: false
+                    }
+                  }}
+                >
+                  {#snippet children(loaderData)}
+                    {@render libraryList(loaderData)}
                   {/snippet}
                   {#snippet loading()}
                     {@render loadingSnippet()}
@@ -726,6 +1327,13 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.5rem;
     grid-auto-rows: 60px;
+  }
+
+  .library-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 1rem;
+    padding: 0.5rem;
   }
 
   .load-more-trigger {

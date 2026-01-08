@@ -55,6 +55,7 @@ import AIPrompt from './extensions/AIPrompt'
 import AIGeneration from './extensions/AIGeneration'
 import { TitleNode } from './extensions/TitleNode'
 import Youtube from './extensions/Youtube'
+import LinkPreview from './extensions/LinkPreview'
 
 export type ExtensionOptions = {
   placeholder?: string
@@ -89,6 +90,8 @@ export type ExtensionOptions = {
   initialTitle?: string
   titleLoading?: boolean
   onTitleChange?: (title: string) => void
+  // Link preview option
+  enableLinkPreview?: boolean
 }
 
 const lowlight = createLowlight(all)
@@ -288,6 +291,7 @@ export const createEditorExtensions = (opts?: ExtensionOptions) => [
   AIPrompt,
   AIGeneration,
   Image,
+  ...conditionalArrayItem(!!opts?.enableLinkPreview, LinkPreview),
   Youtube.configure({
     controls: true,
     nocookie: true,
@@ -338,6 +342,210 @@ export const createEditorExtensions = (opts?: ExtensionOptions) => [
                   return true
                 }
               }
+              return false
+            }
+          }
+        }
+      })
+
+      return [plugin]
+    }
+  }),
+  // Image drop handler - enables dropping images beside other images for side-by-side layout
+  Extension.create<{ pluginKey?: PluginKey }>({
+    name: 'image-drop-handler',
+
+    addProseMirrorPlugins() {
+      const plugin = new Plugin({
+        key: new PluginKey('image-drop-handler'),
+
+        props: {
+          handleDrop(view, event, slice, moved) {
+            // Only handle moved content (not new drops from outside)
+            if (!moved || !slice) return false
+
+            const dropPos = view.posAtCoords({ left: event.clientX, top: event.clientY })
+            if (!dropPos) return false
+
+            // Check if we're dropping an image resource
+            let droppedImageNode = null
+            for (let i = 0; i < slice.content.childCount; i++) {
+              const node = slice.content.child(i)
+              if (node.type.name === 'resource' && node.attrs.type?.startsWith('image/')) {
+                droppedImageNode = node
+                break
+              }
+            }
+
+            if (!droppedImageNode) return false
+
+            // Find the element under the cursor using DOM
+            const target = event.target as HTMLElement
+            const targetResource = target.closest('resource[data-type^="image/"]') as HTMLElement
+
+            if (!targetResource) return false
+
+            // Get the position of the target resource in the document
+            const targetPos = view.posAtDOM(targetResource, 0)
+            if (targetPos < 0) return false
+
+            // Determine if we should insert before or after based on mouse position
+            const rect = targetResource.getBoundingClientRect()
+            const insertAfter = event.clientX > rect.left + rect.width / 2
+
+            // Find the target node and calculate insert position
+            const targetNode = view.state.doc.nodeAt(targetPos)
+            if (!targetNode) return false
+
+            // Calculate insertion position
+            const insertPos = insertAfter ? targetPos + targetNode.nodeSize : targetPos
+
+            // Find the original position of the dragged node by its ID
+            const draggedNodeId = droppedImageNode.attrs.id
+            let originalNodePos = -1
+            let originalNodeSize = 0
+
+            view.state.doc.descendants((node, pos) => {
+              if (node.type.name === 'resource' && node.attrs.id === draggedNodeId) {
+                originalNodePos = pos
+                originalNodeSize = node.nodeSize
+                return false // Stop searching
+              }
+              return true
+            })
+
+            if (originalNodePos < 0) return false
+
+            // Get the target image ID from the DOM element
+            const targetImageId = targetResource.getAttribute('data-id')
+
+            // Don't do anything if dropping on the same image we're dragging
+            if (targetImageId === draggedNodeId) return false
+
+            // Check if this would be a no-op (image already at target position)
+            const wouldBeNoOp =
+              (!insertAfter && originalNodePos + originalNodeSize === targetPos) ||
+              (insertAfter && originalNodePos === targetPos + targetNode.nodeSize)
+
+            if (wouldBeNoOp) return false
+
+            // Create transaction to move the image
+            let tr = view.state.tr
+
+            if (insertPos < originalNodePos) {
+              // Inserting BEFORE the original position
+              tr = tr.insert(insertPos, slice.content)
+              const adjustedDeletePos = originalNodePos + slice.content.size
+              tr = tr.delete(adjustedDeletePos, adjustedDeletePos + originalNodeSize)
+            } else {
+              // Inserting AFTER the original position
+              tr = tr.delete(originalNodePos, originalNodePos + originalNodeSize)
+              const adjustedInsertPos = insertPos - originalNodeSize
+              tr = tr.insert(adjustedInsertPos, slice.content)
+            }
+
+            view.dispatch(tr)
+
+            // After the transaction, apply side-by-side styling to both images
+            // Use requestAnimationFrame to ensure DOM is updated after ProseMirror re-renders
+            requestAnimationFrame(() => {
+              // Find both images by their IDs and apply side-by-side styling
+              const droppedElement = view.dom.querySelector(
+                `resource[data-id="${draggedNodeId}"]`
+              ) as HTMLElement
+              const targetElement = view.dom.querySelector(
+                `resource[data-id="${targetImageId}"]`
+              ) as HTMLElement
+
+              if (droppedElement) {
+                droppedElement.style.display = 'inline-block'
+                droppedElement.style.verticalAlign = 'top'
+                droppedElement.style.maxWidth = '48%'
+                droppedElement.style.margin = '0.25rem'
+                droppedElement.classList.add('side-by-side')
+              }
+
+              if (targetElement) {
+                targetElement.style.display = 'inline-block'
+                targetElement.style.verticalAlign = 'top'
+                targetElement.style.maxWidth = '48%'
+                targetElement.style.margin = '0.25rem'
+                targetElement.classList.add('side-by-side')
+              }
+            })
+
+            return true
+          },
+
+          handleDOMEvents: {
+            // Handle copy event to copy image to system clipboard for external apps
+            copy(view, event) {
+              // Check if a resource node is selected
+              const { selection } = view.state
+              const node =
+                selection.$anchor.parent.type.name === 'resource'
+                  ? selection.$anchor.parent
+                  : view.state.doc.nodeAt(selection.from)
+
+              if (node?.type.name === 'resource' && node.attrs.type?.startsWith('image/')) {
+                // Get the image URL
+                const imageId = node.attrs.id
+                const imageUrl = `surf://surf/resource/${imageId}`
+
+                // Call the preload API to copy image to clipboard
+                if (typeof window !== 'undefined' && 'api' in window) {
+                  // @ts-ignore
+                  window.api.copyImageToClipboard?.(imageUrl)
+                }
+
+                // Allow default copy to also happen (so internal paste still works)
+                return false
+              }
+              return false
+            },
+            dragover(view, event) {
+              const target = event.target as HTMLElement
+
+              // Find the closest resource element that is an image
+              const imageResource = target.closest('resource[data-type^="image/"]') as HTMLElement
+
+              // Remove previous drop indicators from all image resources (clear inline styles)
+              view.dom.querySelectorAll('resource[data-type^="image/"]').forEach((el: Element) => {
+                const htmlEl = el as HTMLElement
+                htmlEl.style.borderLeft = ''
+                htmlEl.style.borderRight = ''
+              })
+
+              if (imageResource) {
+                const rect = imageResource.getBoundingClientRect()
+                const isRightSide = event.clientX > rect.left + rect.width / 2
+
+                // Apply inline styles directly - this bypasses any CSS issues
+                if (isRightSide) {
+                  imageResource.style.borderRight = '4px solid #3b82f6'
+                } else {
+                  imageResource.style.borderLeft = '4px solid #3b82f6'
+                }
+              }
+
+              return false
+            },
+            dragleave(view, event) {
+              const target = event.target as HTMLElement
+              const imageResource = target.closest('resource[data-type^="image/"]') as HTMLElement
+              if (imageResource) {
+                imageResource.style.borderLeft = ''
+                imageResource.style.borderRight = ''
+              }
+              return false
+            },
+            drop(view) {
+              // Clean up drop indicators
+              view.dom.querySelectorAll('resource[data-type^="image/"]').forEach((el: Element) => {
+                const htmlEl = el as HTMLElement
+                htmlEl.style.borderLeft = ''
+                htmlEl.style.borderRight = ''
+              })
               return false
             }
           }

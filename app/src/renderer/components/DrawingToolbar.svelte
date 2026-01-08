@@ -1,5 +1,10 @@
 <script lang="ts">
   // Using Svelte 5 runes mode
+  import { onMount, onDestroy } from 'svelte'
+  import { penToolActiveStore, setPenToolActive } from '../stores/circleToSummarize'
+
+  // Debug logging prefix
+  const LOG_PREFIX = '[DrawingToolbar]'
 
   interface Props {
     ontoolchange?: (detail: { tool: 'pen' | 'none' }) => void
@@ -8,13 +13,48 @@
 
   let { ontoolchange, onclose }: Props = $props()
 
+  // Store subscription
+  let storeUnsubscribe: (() => void) | null = null
+
+  onMount(() => {
+    console.log(LOG_PREFIX, '=== TOOLBAR MOUNTED ===')
+    console.log(LOG_PREFIX, 'ontoolchange defined:', !!ontoolchange)
+    console.log(LOG_PREFIX, 'onclose defined:', !!onclose)
+
+    // Subscribe to the shared store for pen tool state
+    storeUnsubscribe = penToolActiveStore.subscribe((active) => {
+      console.log(LOG_PREFIX, 'Store update received:', active)
+      const newTool = active ? 'pen' : 'none'
+      if (activeTool !== newTool) {
+        console.log(LOG_PREFIX, 'Updating local activeTool from store')
+        activeTool = newTool
+        // Notify parent of the change (so it can update its state too)
+        ontoolchange?.({ tool: newTool })
+      }
+    })
+  })
+
+  onDestroy(() => {
+    console.log(LOG_PREFIX, '=== TOOLBAR DESTROYED ===')
+    if (storeUnsubscribe) {
+      storeUnsubscribe()
+    }
+  })
+
   // Tool state using $state
   let activeTool = $state<'pen' | 'none'>('none')
   let isExpanded = $state(true)
 
   function selectTool(tool: 'pen' | 'none') {
+    console.log(LOG_PREFIX, 'selectTool called:', tool)
+    console.log(LOG_PREFIX, 'Previous activeTool:', activeTool)
     activeTool = tool
+    console.log(LOG_PREFIX, 'New activeTool:', activeTool)
+    console.log(LOG_PREFIX, 'Calling ontoolchange callback...')
     ontoolchange?.({ tool })
+    // Also sync with the shared store
+    setPenToolActive(tool === 'pen')
+    console.log(LOG_PREFIX, 'ontoolchange callback executed and store synced')
   }
 
   function toggleExpand() {
@@ -23,16 +63,24 @@
 
   function close() {
     activeTool = 'none'
+    setPenToolActive(false) // Sync with store
     onclose?.()
   }
 
-  // Keyboard shortcut to toggle pen tool
+  // Keyboard shortcut to toggle pen tool (works when overlay has focus)
   function handleKeyDown(e: KeyboardEvent) {
+    console.log(LOG_PREFIX, 'Key pressed:', e.key, 'metaKey:', e.metaKey, 'ctrlKey:', e.ctrlKey)
     if (e.key === 'd' && (e.metaKey || e.ctrlKey)) {
+      console.log(LOG_PREFIX, 'Cmd+D detected! Toggling pen tool')
       e.preventDefault()
       selectTool(activeTool === 'pen' ? 'none' : 'pen')
     }
   }
+
+  // Track state changes
+  $effect(() => {
+    console.log(LOG_PREFIX, 'activeTool state changed to:', activeTool)
+  })
 </script>
 
 <svelte:window onkeydown={handleKeyDown} />
@@ -93,19 +141,9 @@
   {/if}
 </div>
 
-{#if activeTool === 'pen'}
-  <div class="pen-active-indicator">
-    <span>✏️ Circle content to summarize</span>
-  </div>
-{/if}
-
 <style>
   .toolbar-container {
-    position: fixed;
-    bottom: 24px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 99999;
+    /* No longer using fixed positioning - rendered inside overlay */
     pointer-events: auto;
   }
 
@@ -201,7 +239,8 @@
   }
 
   .pen-active-indicator {
-    position: fixed;
+    /* Note: This indicator is rendered inside the full-screen overlay now */
+    position: absolute;
     top: 80px;
     left: 50%;
     transform: translateX(-50%);
@@ -211,7 +250,7 @@
     border-radius: 20px;
     font-size: 14px;
     font-weight: 500;
-    z-index: 99999;
+    z-index: 1;
     animation: fadeIn 0.2s ease;
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
   }

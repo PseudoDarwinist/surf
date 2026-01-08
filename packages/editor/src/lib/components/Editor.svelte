@@ -66,6 +66,7 @@
   export let initialTitle: string = ''
   export let titleLoading: boolean = false
   export let onTitleChange: ((title: string) => void) | undefined = undefined
+  export let enableLinkPreview: boolean = false
 
   export const isEmptyy = () => !get(editor)?.state.doc.textContent.trim().length
 
@@ -412,7 +413,8 @@
     surfletComponent: surfletComponent,
     webSearchComponent: webSearchComponent,
     onWebSearchCompleted: onWebSearchCompleted,
-    onLinkClick: onLinkClick
+    onLinkClick: onLinkClick,
+    enableLinkPreview: enableLinkPreview
   })
 
   const KeyboardHandler = Extension.create({

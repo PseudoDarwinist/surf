@@ -14,8 +14,10 @@ import {
 import { type AiSFFSQueryResponse } from '@deta/types'
 import {
   BUILT_IN_MODELS,
+  BuiltInModelIDs,
   ModelTiers,
   OPEN_AI_PATH_SUFFIX,
+  Provider,
   type Model
 } from '@deta/types/src/ai.types'
 import { parseAIError } from './helpers'
@@ -227,6 +229,46 @@ export class AIService {
 
     this.log.debug('getting matching model', selectedModel, tier)
 
+    // Claude Agent bypasses the backend (uses local CLI), so for operations that
+    // need a backend-compatible model (title generation, prompt suggestions, etc.),
+    // fallback to a working model - prioritize custom models which user has already configured
+    if (selectedModel.provider === Provider.ClaudeAgent) {
+      console.log('[getMatchingModel] Claude Agent selected, finding fallback')
+      console.log(
+        '[getMatchingModel] All models:',
+        this.modelsValue.map((m) => ({ id: m.id, provider: m.provider, tier: m.tier }))
+      )
+
+      // First, try to find a custom model (user-configured, most likely to work)
+      const customModel = this.modelsValue.find((m) => m.provider === Provider.Custom)
+      if (customModel) {
+        console.log(
+          '[getMatchingModel] Using custom model as fallback:',
+          customModel.id,
+          customModel.label
+        )
+        return customModel
+      }
+
+      // Then try Gemini Flash (free tier available)
+      const geminiModel = this.modelsValue.find((m) => m.id === BuiltInModelIDs.Gemini2Flash)
+      if (geminiModel) {
+        console.log('[getMatchingModel] Using Gemini Flash as fallback')
+        return geminiModel
+      }
+
+      // Finally try any standard model that isn't Claude Agent
+      const anyStandard = this.modelsValue.find(
+        (m) => m.tier === ModelTiers.Standard && m.provider !== Provider.ClaudeAgent
+      )
+      if (anyStandard) {
+        console.log('[getMatchingModel] Using standard model as fallback:', anyStandard.id)
+        return anyStandard
+      }
+
+      console.log('[getMatchingModel] WARNING: No suitable fallback model found!')
+    }
+
     // If the selected model is the same tier as the requested tier, return it
     if (selectedModel.tier === tier) {
       return selectedModel
@@ -430,8 +472,17 @@ export class AIService {
     const options = Object.assign(defaultOpts, opts) as typeof defaultOpts
 
     try {
-      const model = this.getMatchingBackendModel(options.tier)
-      const customKey = this.customKeyValue
+      // Get the actual model being used (may be a fallback for Claude Agent)
+      const actualModel = this.getMatchingModel(options.tier)
+      const model = this.modelToBackendModel(actualModel)
+      // Use the API key from the actual model being used, not the selected model
+      const customKey = actualModel.custom_key
+      console.log(
+        '[createChatCompletion] Using model:',
+        actualModel.id,
+        'customKey present:',
+        !!customKey
+      )
       const responseFormat = options?.responseFormat
 
       let messages: Message[] = []
