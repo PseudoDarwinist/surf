@@ -247,6 +247,34 @@
     z-index: 1;
   }
 
+  // Hide the rounded border on empty paragraphs to prevent the gray empty block
+  // ProseMirror adds a trailing <br class="ProseMirror-trailingBreak"> to empty paragraphs
+  :global(
+      .text-resource-wrapper:has(.note-chat-input.floaty.firstLine) .editor p.active-line.is-empty::after
+    ),
+  :global(
+      .text-resource-wrapper:has(.note-chat-input.floaty.firstLine) .editor p.active-line.is-editor-empty::after
+    ),
+  :global(
+      .text-resource-wrapper:has(.note-chat-input.floaty.firstLine) .editor p.active-line:has(> br.ProseMirror-trailingBreak:only-child)::after
+    ),
+  :global(
+      .text-resource-wrapper:has(.note-chat-input.floaty.firstLine) .editor p.active-line:empty::after
+    ),
+  // Hide the first paragraph if it's before the first mention and appears empty
+  :global(
+      .text-resource-wrapper:has(.note-chat-input.floaty.firstLine) .editor p.active-line:first-of-type:not(:has(span[data-type="mention"]))::after
+    ),
+  // Catch-all: Hide when paragraph has no visible text content (only trailing break or whitespace)
+  :global(
+      .text-resource-wrapper:has(.note-chat-input.floaty.firstLine) .editor p.active-line:not(:has(*:not(br.ProseMirror-trailingBreak)))::after
+    ),
+  // Also hide for the input-container's own editor when empty
+  .input-container :global(.editor p.active-line.is-empty::after),
+  .input-container :global(.editor p.active-line:has(> br.ProseMirror-trailingBreak:only-child)::after) {
+    display: none !important;
+  }
+
   :global(
       .text-resource-wrapper:has(.note-chat-input.floaty.firstLine) .editor p.active-line::after
     ) {
@@ -266,11 +294,17 @@
     border: 1px solid currentColor;
     border-color: light-dark(rgba(0, 0, 0, 0.015), rgba(255, 255, 255, 0.025));
     background: light-dark(rgba(0, 0, 0, 0.02), rgba(255, 255, 255, 0.04));
+  }
 
-    :global(body.dark) & {
-      border-color: rgba(255, 255, 255, 0.025);
-      background: rgba(255, 255, 255, 0.04);
-    }
+  // Dark mode styling for active-line - separate selector to avoid SCSS compilation issues
+  :global(
+      body.dark
+        .text-resource-wrapper:has(.note-chat-input.floaty.firstLine)
+        .editor
+        p.active-line::after
+    ) {
+    border-color: rgba(255, 255, 255, 0.025);
+    background: rgba(255, 255, 255, 0.04);
   }
 
   :global(
@@ -283,15 +317,19 @@
     box-shadow:
       rgba(50, 50, 93, 0.05) 0px 2px 5px -1px,
       rgba(0, 0, 0, 0.1) 0px 1px 2px -1px;
+  }
 
-    // welp.. thanks webdev.. light-dark for some reason doesnt work here..
-    // always picks the light style even though app is in dark mode
-    :global(body.dark) & {
-      border-color: rgba(255, 255, 255, 0.095);
-      background: rgba(255, 255, 255, 0.025);
-      box-shadow:
-        rgba(205, 205, 162, 0.02) 0px 2px 5px -1px,
-        rgba(255, 255, 255, 0.05) 0px 1px 2px -1px;
-    }
+  // Dark mode styling for focused active-line - separate selector to avoid SCSS compilation issues
+  :global(
+      body.dark
+        .text-resource-wrapper:has(.note-chat-input.floaty.firstLine)
+        .editor:focus-within
+        p.active-line::after
+    ) {
+    border-color: rgba(255, 255, 255, 0.095);
+    background: rgba(255, 255, 255, 0.025);
+    box-shadow:
+      rgba(205, 205, 162, 0.02) 0px 2px 5px -1px,
+      rgba(255, 255, 255, 0.05) 0px 1px 2px -1px;
   }
 </style>

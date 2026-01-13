@@ -378,12 +378,137 @@ export class AIChat {
   ) {
     const model = opts?.model ?? this.getModel(opts)
 
+    this.log.debug('sending chat message to chat with id', this.id, model, opts, query)
+
+    // Route Claude Agent models to the SDK (uses local CLI authentication)
+    if (model.provider === Provider.ClaudeAgent) {
+      this.log.debug('Using Claude Agent SDK for chat')
+
+      // Call window.api.claudeAgent directly since ClaudeAgentService doesn't have access
+      // to the preload-exposed API in this context
+      const api = (window as any).api
+      if (!api?.claudeAgent?.sendPrompt) {
+        this.log.error('Claude Agent API not available in window.api')
+        callback('Error: Claude Agent API not available. Please restart the app.')
+        return { model }
+      }
+
+      try {
+        // Build context from resource IDs if available
+        let contextPrompt = query
+        console.log('[ClaudeAgent] sendMessage entered Claude Agent path, opts:', {
+          hasResourceIds: !!opts?.resourceIds,
+          resourceIdsCount: opts?.resourceIds?.length,
+          noteResourceId: opts?.noteResourceId
+        })
+        if (opts?.resourceIds && opts.resourceIds.length > 0) {
+          this.log.debug('Claude Agent: Fetching resource content for context', opts.resourceIds)
+          console.log('[ClaudeAgent Context] Resource IDs:', opts.resourceIds)
+
+          const resourceContents: string[] = []
+          for (const resourceId of opts.resourceIds) {
+            try {
+              const resource = await this.resourceManager.getResource(resourceId)
+              console.log('[ClaudeAgent Context] Resource found:', !!resource, 'id:', resourceId)
+              if (resource) {
+                const parsedData = await resource.getParsedData()
+                console.log(
+                  '[ClaudeAgent Context] ParsedData keys:',
+                  parsedData ? Object.keys(parsedData) : 'null',
+                  'type:',
+                  typeof parsedData
+                )
+                if (parsedData) {
+                  // Extract text content from the resource
+                  const content =
+                    typeof parsedData === 'string'
+                      ? parsedData
+                      : parsedData.content_plain ||
+                        parsedData.content ||
+                        parsedData.text ||
+                        parsedData.plain ||
+                        parsedData.html ||
+                        JSON.stringify(parsedData)
+
+                  console.log(
+                    '[ClaudeAgent Context] Content extracted, length:',
+                    content?.length || 0,
+                    'preview:',
+                    content?.substring(0, 100)
+                  )
+
+                  if (content && content.length > 0) {
+                    const title = resource.metadata?.name || resource.id
+                    resourceContents.push(`## Context: ${title}\n\n${content}`)
+                  } else {
+                    console.log('[ClaudeAgent Context] Content is empty for resource:', resourceId)
+                  }
+                }
+              }
+            } catch (e) {
+              this.log.error('Claude Agent: Error fetching resource', resourceId, e)
+              console.log('[ClaudeAgent Context] Error:', e)
+            }
+          }
+
+          console.log(
+            '[ClaudeAgent Context] Total resourceContents items:',
+            resourceContents.length
+          )
+          if (resourceContents.length > 0) {
+            // Prepend context to the query
+            const contextText = resourceContents.join('\n\n---\n\n')
+            contextPrompt = `Here is some context about the current page/article:\n\n${contextText}\n\n---\n\nUser question: ${query}`
+            this.log.debug(
+              'Claude Agent: Context added to prompt, total length:',
+              contextPrompt.length
+            )
+          }
+        } else {
+          console.log('[ClaudeAgent Context] No resource IDs provided in opts')
+        }
+
+        this.log.debug('Calling Claude Agent sendPrompt...')
+        const response = await api.claudeAgent.sendPrompt(contextPrompt, {
+          maxTurns: 3,
+          maxBudgetUsd: 0.5
+        })
+        this.log.debug('Claude Agent response received', { hasContent: !!response.content })
+
+        if (response.error) {
+          this.log.error('Claude Agent error:', response.error)
+          // Wrap with expected format so chatCallback processes correctly
+          callback('<sources></sources>')
+          callback(`Error: ${response.error}`)
+        } else if (response.content) {
+          // Wrap with expected format - empty sources first, then content
+          callback('<sources></sources>')
+          callback(response.content)
+        }
+      } catch (error: any) {
+        this.log.error('Claude Agent stream error:', error)
+        callback(`Error: ${error.message || 'Claude Agent SDK error'}`)
+      }
+
+      return { model }
+    }
+
     const backendModel = this.ai.modelToBackendModel(model)
     const customKey = model.custom_key
 
-    this.log.debug('sending chat message to chat with id', this.id, model, opts, query)
+    console.log('[chat.sendMessage] Backend call parameters:', {
+      hasNoteResourceId: !!opts?.noteResourceId,
+      noteResourceId: opts?.noteResourceId,
+      queryLength: query.length,
+      modelId: model.id,
+      modelProvider: model.provider,
+      hasCustomKey: !!customKey,
+      resourceIds: opts?.resourceIds,
+      general: opts?.general
+    })
 
     if (opts?.noteResourceId) {
+      console.log('[chat.sendMessage] Using sendAINoteMessage path')
       await this.sffs.sendAINoteMessage(callback, opts.noteResourceId, query, backendModel, {
         customKey: customKey,
         limit: opts?.limit,
@@ -394,6 +519,7 @@ export class AIChat {
         surflet: opts?.surflet
       })
     } else {
+      console.log('[chat.sendMessage] Using sendAIChatMessage path')
       await this.sffs.sendAIChatMessage(callback, this.id, query, backendModel, {
         customKey: customKey,
         limit: opts?.limit,
@@ -554,7 +680,9 @@ export class AIChat {
 
   async processContextItems(prompt: string) {
     this.log.debug('Processing context items for chat', prompt)
+    console.log('[processContextItems] Starting for prompt:', prompt.substring(0, 30))
     const resourceIds = await this.contextManager.getResourceIds(prompt)
+    console.log('[processContextItems] Got resourceIds:', resourceIds)
     const inlineImages = await this.contextManager.getInlineImages()
     const usedScreenshots = false // this.contextItemsValue.filter((item) => item.type === 'screenshot').length > 0
 

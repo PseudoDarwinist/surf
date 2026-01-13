@@ -723,6 +723,13 @@ export class ContextManager {
       //     return this.addActiveSpaceContext('resources', opts)
       //   }
     } else if (itemId == ACTIVE_TAB_MENTION.id) {
+      // Check if we have a captured resource ID from pre-preparation
+      // This happens when sidebar ASK captures the content before the note opens
+      const capturedResourceId = (item.data as any)?.capturedResourceId
+      if (capturedResourceId) {
+        this.log.debug('Using captured resource ID for active tab:', capturedResourceId)
+        return this.addResource(capturedResourceId, opts)
+      }
       return this.addActiveTab(opts)
     } else if (itemId === WIKIPEDIA_SEARCH_MENTION.id) {
       return this.addWikipediaContext(opts)
@@ -1240,20 +1247,25 @@ export class ContextService {
       })
     } else {
       this.log.debug('Existing resource found for tab, using it', tab.id, tabResource.id)
-      // const url =
-      //   tabResource.tags?.find((tag) => tag.name === ResourceTagsBuiltInKeys.CANONICAL_URL)
-      //     ?.value ??
-      //   tab.currentLocation ??
-      //   tab.initialLocation
 
-      // this.log.debug(
-      //   'Existing resource found for tab, updating with fresh content',
-      //   tab.id,
-      //   tabResource.id,
-      //   url
-      // )
+      // For YouTube, always refresh to get fresh transcript even if resource exists
+      const isYouTube = checkIfYoutubeUrl(tab.view.urlValue)
+      if (isYouTube) {
+        const url =
+          tabResource.tags?.find((tag) => tag.name === ResourceTagsBuiltInKeys.CANONICAL_URL)
+            ?.value ??
+          tab.currentLocation ??
+          tab.initialLocation
 
-      // tabResource = await browserTab.refreshResourceWithPage(tabResource, url, false)
+        this.log.debug(
+          'YouTube resource found, refreshing with fresh content for transcript',
+          tab.id,
+          tabResource.id,
+          url
+        )
+
+        tabResource = await tab.view.refreshResourceWithPage(tabResource, url, true) // freshWebview=true for YouTube
+      }
     }
 
     if (!tabResource) {

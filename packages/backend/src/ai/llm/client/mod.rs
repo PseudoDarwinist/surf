@@ -33,6 +33,14 @@ pub enum Provider {
     Custom(String),
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthHeaderType {
+    #[default]
+    Bearer,   // Authorization: Bearer <key>
+    XApiKey,  // X-API-KEY: <key>
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Model {
     #[serde(rename = "gpt-5")]
@@ -71,6 +79,8 @@ pub enum Model {
         provider: Provider,
         max_tokens: usize,
         vision: bool,
+        #[serde(default)]
+        auth_header_type: AuthHeaderType,
     },
 }
 
@@ -109,7 +119,8 @@ mod response_types {
         #[derive(Debug, Serialize, Deserialize)]
         pub(crate) struct ChatCompletionChoice {
             pub message: Option<ChatCompletionMessage>,
-            pub index: u32,
+            #[serde(default)]
+            pub index: Option<u32>,  // Made optional - some custom models don't include this field
             pub delta: Option<ChatCompletionChoiceDelta>,
         }
 
@@ -248,13 +259,20 @@ impl Provider {
         }
     }
 
-    fn get_headers(&self, api_key: Option<String>) -> Vec<(String, String)> {
+    fn get_headers(&self, api_key: Option<String>, auth_header_type: Option<&AuthHeaderType>) -> Vec<(String, String)> {
         let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
 
         if let Some(api_key) = api_key {
             let auth = match self {
-                Self::OpenAI | Self::Google | Self::Custom(_) => {
+                Self::OpenAI | Self::Google => {
                     ("Authorization".to_string(), format!("Bearer {}", api_key))
+                }
+                Self::Custom(_) => {
+                    // Use custom auth header type if provided, otherwise default to Bearer
+                    match auth_header_type.unwrap_or(&AuthHeaderType::Bearer) {
+                        AuthHeaderType::Bearer => ("Authorization".to_string(), format!("Bearer {}", api_key)),
+                        AuthHeaderType::XApiKey => ("X-API-KEY".to_string(), api_key.to_string()),
+                    }
                 }
                 Self::Anthropic => ("x-api-key".to_string(), api_key.to_string()),
             };
@@ -273,6 +291,7 @@ impl Provider {
     fn get_request_params(
         &self,
         custom_key: Option<String>,
+        auth_header_type: Option<&AuthHeaderType>,
     ) -> BackendResult<(String, Vec<(String, String)>)> {
         let (completions_url, api_key) = match (self, custom_key) {
             (Self::Custom(_), api_key) => (self.get_completion_url(None), api_key),
@@ -280,7 +299,7 @@ impl Provider {
             (_, None) => return Err(BackendError::LLMClientErrorAPIKeyMissing),
         };
 
-        Ok((completions_url, self.get_headers(api_key)))
+        Ok((completions_url, self.get_headers(api_key, auth_header_type)))
     }
 
     fn prepare_completion_request(
@@ -322,6 +341,9 @@ impl Provider {
             "model": model,
             "stream": stream,
             "messages": messages,
+            // Add max_tokens to ensure the model allocates enough tokens for the response
+            // Without this, some custom models may truncate responses prematurely
+            "max_tokens": 16384,
         });
         if let Some(format) = response_format {
             json_obj["response_format"] = serde_json::json!(format);
@@ -543,6 +565,13 @@ impl Model {
             Self::Custom { provider, .. } => provider,
         }
     }
+
+    fn auth_header_type(&self) -> Option<&AuthHeaderType> {
+        match self {
+            Self::Custom { auth_header_type, .. } => Some(auth_header_type),
+            _ => None,
+        }
+    }
 }
 
 impl TokenModel for Model {
@@ -660,7 +689,8 @@ impl LLMClient {
     ) -> BackendResult<Response> {
         let messages = truncate_messages(filter_unsupported_content(messages, model), model);
         let provider = model.provider();
-        let (url, headers) = provider.get_request_params(custom_key)?;
+        let auth_header_type = model.auth_header_type();
+        let (url, headers) = provider.get_request_params(custom_key, auth_header_type)?;
         let body = provider.prepare_completion_request(
             &model.as_str(),
             stream,

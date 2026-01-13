@@ -323,7 +323,7 @@ fn process_resource_data(
 ) -> BackendResult<Option<(ResourceTextContentType, String)>> {
     let resource_text_content_type =
         ResourceTextContentType::from_resource_type(&resource.resource.resource_type)
-            .ok_or_else(|| BackendError::GenericError("invalid resource type".to_string()))?;
+            .ok_or_else(|| BackendError::GenericError(format!("invalid resource type: '{}'", resource.resource.resource_type)))?;
 
     match resource_text_content_type {
         ResourceTextContentType::Note => Ok(Some((

@@ -25,6 +25,12 @@
   import AltWindowControls from './components/AltWindowControls.svelte'
   import { Icon } from '@deta/icons'
   import { checkAndCreateDemoItems } from '@deta/services'
+  import ContextualChatManager from '../components/ContextualChatManager.svelte'
+  import { writable } from 'svelte/store'
+
+  // Circle to Summarize components
+  import CircleToSummarizeManager from '../components/CircleToSummarizeManager.svelte'
+  import { togglePenTool } from '../stores/circleToSummarize'
 
   const log = useLogScope('Core')
 
@@ -39,10 +45,35 @@
     ai
   } = initServices()
 
+  console.log('[ContextualChat] AI service initialized:', !!ai)
+
   const activeTabView = $derived(tabsService.activeTab?.view)
 
   let unsubs: Fn[] = []
   let activeTabNavigationBar: NavigationBar | undefined
+
+  // Contextual Chat state
+  const contextualChatVisible = writable(false)
+  const contextualChatSelectedText = writable('')
+  const contextualChatPageContext = writable('')
+  const contextualChatPageTitle = writable('')
+  const contextualChatPageUrl = writable('')
+
+  // No local state needed for Circle to Summarize - handled by Manager
+
+  // Overlay bounds for toolbar
+  let toolbarOverlayBounds = $state({ x: 0, y: 0, width: 0, height: 0 })
+
+  $effect(() => {
+    if (typeof window !== 'undefined') {
+      toolbarOverlayBounds = {
+        x: 0,
+        y: 0,
+        width: window.innerWidth,
+        height: window.innerHeight
+      }
+    }
+  })
 
   // TODO: move into searchinput directly?
   const handleSearchInput = useDebounce((value: string) => {
@@ -229,7 +260,33 @@
       return true
     })
 
+    // Circle to Summarize: Register Cmd+D shortcut in main window
+    // This is needed because the overlay window has its own keyboard context
+    const unsubPenTool = keyboardManager.register('CmdOrCtrl+D', () => {
+      log.debug('Toggling pen tool (CMD+D) from Core.svelte')
+      togglePenTool()
+      return true
+    })
+    unsubs.push(unsubPenTool)
+
     unsubs.push(handlePreloadEvents())
+
+    // Handle contextual chat IPC event from preload
+    // @ts-ignore - preloadEvents is defined by the preload script
+    console.log('[ContextualChat] Setting up contextual chat IPC listener in Core.svelte')
+    const contextualChatUnsub = window.preloadEvents.onShowContextualChat(
+      (data: { selectedText: string; pageTitle: string; pageUrl: string }) => {
+        console.log('[ContextualChat] IPC callback received in Core.svelte:', data)
+        log.debug('Showing contextual chat', data)
+        contextualChatSelectedText.set(data.selectedText)
+        contextualChatPageContext.set('') // Will be enhanced with actual page content
+        contextualChatPageTitle.set(data.pageTitle)
+        contextualChatPageUrl.set(data.pageUrl)
+        contextualChatVisible.set(true)
+        console.log('[ContextualChat] Stores updated, contextualChatVisible set to true')
+      }
+    )
+    unsubs.push(contextualChatUnsub)
 
     try {
       await checkAndCreateDemoItems()
@@ -323,6 +380,19 @@
     <AppSidebar />
   </main>
 </div>
+
+{#if ai}
+  <ContextualChatManager
+    visible={contextualChatVisible}
+    selectedText={contextualChatSelectedText}
+    pageContext={contextualChatPageContext}
+    pageTitle={contextualChatPageTitle}
+    pageUrl={contextualChatPageUrl}
+  />
+{/if}
+
+<!-- Circle to Summarize Feature -->
+<CircleToSummarizeManager />
 
 <style lang="scss">
   :global(html) {

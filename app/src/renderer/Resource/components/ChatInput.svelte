@@ -18,6 +18,7 @@
   import type { MentionItemsFetcher } from '@deta/editor/src/lib/extensions/Mention/suggestion'
   import { AddToContextMenu, Dropdown, ModelPicker } from '@deta/ui'
   import type { AIChatStatusMessage, AITool } from '@deta/types'
+  import { togglePenTool } from '../../stores/circleToSummarize'
 
   const log = useLogScope('ChatInput')
   const dispatch = createEventDispatcher<{
@@ -42,6 +43,11 @@
 
   export let onFileSelect: () => void
   export let onMentionSelect: () => void
+
+  // Focus Mode props
+  export let showFocusToggle: boolean = false
+  export let focusModeEnabled: boolean = false
+  export let onFocusToggle: (() => void) | undefined = undefined
 
   const config = useConfig()
 
@@ -178,6 +184,23 @@
     }))
   })
 
+  // Draw tools dropdown items (Circle to Summarize, future: Squiggly for image gen, etc.)
+  const drawToolsDropdownItems = [
+    {
+      id: 'circle-summarize',
+      label: 'Circle to Summarize',
+      icon: 'lasso',
+      checked: false,
+      type: 'button',
+      action: () => {
+        log.debug('Activating Circle to Summarize')
+        togglePenTool()
+      }
+    }
+    // Future: Add more draw tools here
+    // { id: 'squiggly-image', label: 'Squiggly → Image', icon: 'image', ... }
+  ]
+
   const handleClickPrompt = (e: CustomEvent<PromptPillItem>) => {
     if ($isLoading) return // Prevent prompt clicks while loading
 
@@ -302,6 +325,25 @@
             align="end"
             disabled={$isLoading}
           />
+          <Dropdown
+            items={drawToolsDropdownItems}
+            triggerText="Draw"
+            triggerIcon="pencil"
+            align="end"
+            disabled={$isLoading}
+          />
+          {#if showFocusToggle}
+            <button
+              class="focus-toggle-btn"
+              class:active={focusModeEnabled}
+              on:click={() => onFocusToggle?.()}
+              title={focusModeEnabled ? 'Exit Focus Mode' : 'Enter Focus Mode'}
+              disabled={$isLoading}
+            >
+              <Icon name="book-open" size="14" />
+              <span>{focusModeEnabled ? 'Exit Focus' : 'Focus'}</span>
+            </button>
+          {/if}
           <ModelPicker align="end" />
           <div>
             <button
@@ -667,6 +709,38 @@
         .stop-icon {
           display: inline;
         }
+      }
+    }
+
+    .focus-toggle-btn {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 0.25rem 0.5rem;
+      gap: 0.25rem;
+      cursor: pointer;
+      border-radius: 9px;
+      background: transparent;
+      color: light-dark(#8b7355, #c9a67a);
+      font-size: 13px;
+      border: none;
+      outline: none;
+      transition:
+        background-color 150ms ease-out,
+        color 150ms ease-out;
+
+      &:hover:not(:disabled) {
+        background: light-dark(rgba(139, 115, 85, 0.1), rgba(201, 166, 122, 0.15));
+      }
+
+      &.active {
+        color: light-dark(#b45309, #f59e0b);
+        background: light-dark(rgba(180, 83, 9, 0.1), rgba(245, 158, 11, 0.15));
+      }
+
+      &:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
       }
     }
 

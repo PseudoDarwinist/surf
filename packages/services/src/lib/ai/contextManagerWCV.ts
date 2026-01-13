@@ -258,6 +258,13 @@ export class ContextManagerWCV {
     } else if (item.type === MentionItemType.ALL_TABS) {
       return this.addTabs()
     } else if (item.type === MentionItemType.ACTIVE_TAB) {
+      // Check if a pre-captured resource ID exists (for sidebar Ask flow)
+      // This is set in handleTeletypeAsk when the article content is captured
+      // BEFORE the note opens and changes the active tab
+      if (item.data?.capturedResourceId) {
+        this.log.debug('Using captured resource ID from mention:', item.data.capturedResourceId)
+        return this.addResource(item.data.capturedResourceId, opts)
+      }
       return this.addActiveTab(opts)
     } else {
       this.log.error('Unknown mention item type', item)

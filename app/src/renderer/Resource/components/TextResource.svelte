@@ -120,6 +120,14 @@
   import type { ResourceNote, ResourceJSON } from '@deta/services/resources'
   import { type MessagePortClient, type AIQueryPayload } from '@deta/services/messagePort'
   import { promptForFilesAndTurnIntoResourceMentions } from '@deta/services'
+  import {
+    ProgressiveReader,
+    ProgressiveReaderToolbar,
+    ReadingPreferences,
+    FocusToolbar,
+    readingPreferences
+  } from '@deta/ui'
+  import { Icon } from '@deta/icons'
 
   export let resourceId: string
   export let autofocus: boolean = true
@@ -163,6 +171,18 @@
   // We use these to determine whether to display the big prompt bubbles
   // need to wire thi back when fixing the prompts with the new input bar
   const isEmpty = writable(false)
+
+  // Progressive Reading Mode state
+  const progressiveReadingEnabled = writable(false)
+  const progressiveRevealedContent = writable('')
+  const progressiveRevealedCount = writable(0)
+  const progressiveTotalCount = writable(0)
+  // Snapshot of content when entering Focus Mode to prevent background updates from resetting the reader
+  const focusModeContent = writable('')
+  const focusModeAIResponse = writable<string | null>(null)
+  const focusModeAILoading = writable(false)
+  let progressiveReaderRef: ProgressiveReader
+  const readingPreferencesOpen = writable(false)
 
   const tools = writable<AITool[]>(AI_TOOLS)
 
@@ -209,6 +229,7 @@
 
   const generateTitle = async (query: string) => {
     try {
+      console.log('[GenerateTitle] Starting with query:', query.substring(0, 50))
       log.debug('Generating note title', query)
 
       // Set loading state for title generation
@@ -222,40 +243,59 @@
         }
       }
 
+      console.log('[GenerateTitle] Calling ai.createChatCompletion...')
+      log.debug('generateTitle: Calling ai.createChatCompletion with tier Standard')
       const completion = await ai.createChatCompletion(
         JSON.stringify({ message: query }),
         CHAT_TITLE_GENERATOR_PROMPT,
         { tier: ModelTiers.Standard }
       )
 
-      log.debug('title completion', completion)
+      console.log('[GenerateTitle] Completion result:', {
+        error: completion.error,
+        hasOutput: !!completion.output,
+        output: completion.output?.substring(0, 50)
+      })
+      log.debug('generateTitle: completion result', completion)
 
       if (completion.error) {
-        log.error('Failed to generate title', completion.error)
+        console.log('[GenerateTitle] ERROR:', completion.error)
+        log.error('generateTitle: Failed with error', completion.error)
         return null
       }
 
+      log.debug('generateTitle: Got output:', completion.output?.substring(0, 100))
+
       if (!completion.output) {
-        log.error('Failed to generate title, no output')
+        log.error('generateTitle: Failed - no output in completion')
         return null
       }
 
       const generatedTitle = completion.output.trim() ?? query
+      log.debug('generateTitle: Setting title to:', generatedTitle)
       title = generatedTitle
 
       // Update TitleNode if it's enabled
       if (showTitle && !readOnlyMode && editorElem) {
         const editor = editorElem.getEditor()
+        log.debug(
+          'generateTitle: Editor available:',
+          !!editor,
+          'setTitle available:',
+          !!editor?.commands?.setTitle
+        )
         if (editor && editor.commands.setTitle) {
           editor.commands.setTitle(generatedTitle)
+          log.debug('generateTitle: setTitle called')
         }
       }
 
       await resourceManager.updateResourceMetadata(resourceId, { name: generatedTitle })
+      log.debug('generateTitle: Metadata updated')
 
       return generatedTitle
     } catch (err) {
-      log.error('Error generating title:', err)
+      log.error('generateTitle: Error caught:', err)
       return null
     } finally {
       // Reset loading state
@@ -276,7 +316,10 @@
       if (payload.query) {
         log.debug('Found ask query param:', payload)
 
-        generateTitle(payload.query)
+        // Generate title asynchronously but don't block query execution
+        generateTitle(payload.query).catch((err) => {
+          console.log('[handleNoteRunQuery] generateTitle error:', err)
+        })
 
         if (contextManager) {
           await contextManager.clear()
@@ -334,6 +377,9 @@
   onMount(() => {
     // @ts-ignore
     window.wikipediaAPI = wikipediaAPI
+
+    // NOTE: focus=true URL param is checked AFTER content is loaded in setupAsync
+    // to avoid a race condition where Focus Mode is enabled before content is available
 
     // Add event listener for onboarding mention
     document.addEventListener(
@@ -419,6 +465,14 @@
 
       contentHash.set(generateContentHash($content))
 
+      // Check if focus=true URL param is present to auto-enable Focus Mode
+      // This is done AFTER content is loaded to ensure ProgressiveReader has content
+      const urlParams = new URLSearchParams(window.location.search)
+      if (urlParams.get('focus') === 'true' && $content) {
+        log.debug('Auto-enabling Focus Mode from URL param (content loaded)')
+        progressiveReadingEnabled.set(true)
+      }
+
       // if (!contextManager) {
       //   contextManager = note.contextManager
       // }
@@ -473,6 +527,10 @@
 
     unsubs.push(
       messagePort.noteRunQuery.handle((payload) => {
+        console.log('[TextResource] noteRunQuery received:', {
+          query: payload?.query?.substring(0, 30),
+          mentionsCount: payload?.mentions?.length
+        })
         log.debug('Received note-run-query event', payload)
         handleNoteRunQuery(payload)
       }),
@@ -869,6 +927,22 @@
   }
 
   const handlePaste = async (e: ClipboardEvent) => {
+    // Don't prevent default here - let the editor's paste-handler plugin handle it first
+    // The editor plugin handles file pastes and dispatches 'editor-file-paste' event
+
+    // Check if there are files in the clipboard - if so, skip processing here
+    // because handleEditorFilePaste will handle them via the editor's paste-handler plugin
+    const clipboardDataItems = Array.from(e.clipboardData?.items || [])
+    const hasFiles = clipboardDataItems.some((item) => item.kind === 'file')
+    const htmlData = e.clipboardData?.getData('text/html')
+    const hasHtmlImages = htmlData && htmlData.includes('<img')
+
+    // If the paste contains files or HTML with images, let handleEditorFilePaste handle it
+    // This prevents double-processing of images
+    if (hasFiles || hasHtmlImages) {
+      return
+    }
+
     e.preventDefault()
     try {
       var parsed = await processPaste(e)
@@ -1210,6 +1284,35 @@
     opts?: Partial<ChatSubmitOptions>,
     loadingMessage?: string
   ) => {
+    // Focus Mode Context Injection: When Progressive Reading is enabled,
+    // prepend the revealed content as context so the AI answers based only on
+    // what the user has read so far, not the entire article.
+    let enhancedQuery = query
+    console.log('[FocusMode AI] generateAndInsertAIOutput called', {
+      progressiveReadingEnabled: get(progressiveReadingEnabled),
+      queryLength: query.length
+    })
+    if (get(progressiveReadingEnabled)) {
+      const revealedContent = getProgressiveContext()
+      console.log('[FocusMode AI] Revealed content:', {
+        hasContent: !!revealedContent,
+        contentLength: revealedContent?.length || 0
+      })
+      if (revealedContent) {
+        log.debug('Focus Mode: Adding revealed content as context', {
+          queryLength: query.length,
+          contextLength: revealedContent.length
+        })
+        // Strip HTML tags for cleaner context
+        const plainText = revealedContent
+          .replace(/<[^>]*>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+        enhancedQuery = `Here is the content I've read so far in the article:\n\n---\n${plainText}\n---\n\nBased ONLY on the above content, please answer: ${query}`
+        console.log('[FocusMode AI] Enhanced query created, total length:', enhancedQuery.length)
+      }
+    }
+
     const options = {
       focusEnd: opts?.focusEnd ?? false,
       focusInput: opts?.focusInput ?? false,
@@ -1219,8 +1322,21 @@
       generationID: opts?.generationID
     } as ChatSubmitOptions
 
-    const editor = editorElem.getEditor()
-    const noteEditor = NoteEditor.create(editor, editorElem, editorElement)
+    // In Focus Mode, the regular editor is hidden, so we need to handle this differently
+    const isFocusMode = get(progressiveReadingEnabled)
+    console.log('[FocusMode AI] isFocusMode:', isFocusMode)
+
+    let editor: any = null
+    let noteEditor: any = null
+
+    // Only get editor if not in Focus Mode (editor is hidden in Focus Mode)
+    if (!isFocusMode && editorElem) {
+      console.log('[FocusMode AI] Getting editor (non-focus mode)...')
+      editor = editorElem.getEditor()
+      noteEditor = NoteEditor.create(editor, editorElem, editorElement)
+    } else {
+      console.log('[FocusMode AI] Skipping editor operations (Focus Mode active)')
+    }
 
     const enabledTools = get(tools).filter((tool) => tool.active)
     const toolsConfiguration = {
@@ -1236,7 +1352,8 @@
       value: loadingMessage || 'Thinking...'
     })
 
-    if (options.focusEnd) {
+    // Skip editor focus operations in Focus Mode
+    if (!isFocusMode && options.focusEnd && editorElem) {
       editorElem.focusEnd()
     }
 
@@ -1247,15 +1364,25 @@
     let aiGeneration: EditorAIGeneration | null = null
 
     try {
+      console.log('[FocusMode AI] Creating new note chat...')
       chat = await createNewNoteChat(mentions)
+      console.log('[FocusMode AI] Chat created:', !!chat)
 
-      if (!chat || !query) {
+      if (!chat || !enhancedQuery) {
         log.error('Failed to create chat')
+        console.log('[FocusMode AI] FAILED: chat or enhancedQuery missing', {
+          chat: !!chat,
+          enhancedQuery: !!enhancedQuery
+        })
         updateAIGenerationProgress(100, 'Error generating AI output')
         return
       }
 
-      const currentPosition = editor.view.state.selection.from
+      // Only create AI generation editor block if not in Focus Mode
+      let currentPosition = 0
+      if (!isFocusMode && editor) {
+        currentPosition = editor.view.state.selection.from
+      }
 
       autocompleting.set(true)
 
@@ -1269,15 +1396,18 @@
 
       const textQuery = getEditorContentText(query)
 
-      aiGeneration = noteEditor.createAIGeneration(currentPosition, {
-        id: options.generationID,
-        textQuery: textQuery,
-        autoScroll: options.autoScroll,
-        showPrompt: options.showPrompt,
-        loadingMessage: loadingMessage
-      })
+      // Only create AI generation in editor if not in Focus Mode
+      if (!isFocusMode && noteEditor) {
+        aiGeneration = noteEditor.createAIGeneration(currentPosition, {
+          id: options.generationID,
+          textQuery: textQuery,
+          autoScroll: options.autoScroll,
+          showPrompt: options.showPrompt,
+          loadingMessage: loadingMessage
+        })
+      }
 
-      if (options.focusInput) {
+      if (!isFocusMode && options.focusInput) {
         focusChatInput()
       }
 
@@ -1317,11 +1447,31 @@
         }
       }, 15)
 
-      let markdownQuery = await htmlToMarkdown(query)
+      let markdownQuery = await htmlToMarkdown(enhancedQuery)
       if (!markdownQuery) {
-        markdownQuery = query
+        markdownQuery = enhancedQuery
       }
 
+      console.log('[FocusMode AI] Calling chat.createChatCompletion', {
+        markdownQueryLength: markdownQuery.length,
+        hasChat: !!chat,
+        trigger
+      })
+
+      // In Focus Mode, inject the question immediately into the stream
+      if (get(progressiveReadingEnabled) && progressiveReaderRef) {
+        // ChapterPal style: Right-aligned minimal pill with just the question text
+        const questionBubbleHtml = `
+          <div class="focus-chat-question">
+            ${query}
+          </div>
+        `
+        progressiveReaderRef.insertChunkNext(questionBubbleHtml)
+      }
+
+      await wait(10) // Small delay to ensuring rendering order if needed
+
+      // Send to AI
       const response = await chat.createChatCompletion(
         markdownQuery,
         {
@@ -1335,11 +1485,15 @@
         renderFunction
       )
 
-      log.debug('autocomplete response', response)
+      console.log('[FocusMode AI] chat.createChatCompletion completed', {
+        hasResponse: !!response,
+        hasOutput: !!response?.output,
+        hasError: !!response?.error
+      })
       if (response.error) {
         log.error('Error generating AI output', response.error)
         let errorMsg = response.error.message || 'An unknown error occurred'
-        aiGeneration.updateStatus('failed')
+        aiGeneration?.updateStatus('failed')
         chatInputComp?.showStatus({
           type: 'error',
           value: errorMsg
@@ -1347,7 +1501,7 @@
       } else if (!response.output) {
         log.error('No output found')
 
-        aiGeneration.updateStatus('failed')
+        aiGeneration?.updateStatus('failed')
         chatInputComp?.showStatus({
           type: 'error',
           value: 'Sorry, no response was generated for an unknown reason.'
@@ -1357,9 +1511,47 @@
 
         log.debug('inserted output', content)
 
-        await wait(200)
-        aiGeneration.updateStatus('completed')
-        chatInputComp?.dismissStatus()
+        // In Focus Mode, inject the response directly into the reading stream with word-by-word streaming
+        if (isFocusMode && progressiveReaderRef) {
+          console.log('[FocusMode AI] Injecting response into reader stream with streaming')
+
+          // ChapterPal style: Just the Surf logo inline with the response text
+          const chatBubbleHtml = `
+            <div class="focus-chat-response">
+              <img src="/assets/icon_512.png" alt="Surf" class="focus-chat-icon-img" />
+              <div class="bubble-content"></div>
+            </div>
+          `
+
+          // Get the streamer function and insert the bubble
+          const updateContent = progressiveReaderRef.insertChunkWithStreaming(chatBubbleHtml)
+
+          // Parse HTML content to get words for streaming
+          const tempDiv = document.createElement('div')
+          tempDiv.innerHTML = content
+          const textContent = tempDiv.textContent || ''
+          const words = textContent.split(/\s+/).filter(Boolean)
+
+          // Stream words with delay
+          const WORD_DELAY = 25 // ms per word, matching ProgressiveReader's streaming speed
+          let currentContent = ''
+
+          for (let i = 0; i < words.length; i++) {
+            currentContent += (i > 0 ? ' ' : '') + words[i]
+            updateContent(currentContent)
+            await wait(WORD_DELAY)
+          }
+
+          // Final update with full HTML content for proper formatting
+          updateContent(content)
+
+          focusModeAILoading.set(false)
+          chatInputComp?.dismissStatus()
+        } else {
+          await wait(200)
+          aiGeneration?.updateStatus('completed')
+          chatInputComp?.dismissStatus()
+        }
 
         // Generate title if needed (empty/default title and any AI generation)
         const shouldGenerateTitle =
@@ -1367,7 +1559,7 @@
           showTitle &&
           !readOnlyMode
 
-        if (shouldGenerateTitle) {
+        if (shouldGenerateTitle && !isFocusMode) {
           try {
             log.debug('Generating title for AI generation')
             const textQuery = getEditorContentText(query)
@@ -2485,6 +2677,69 @@
     }
   }, 500)
 
+  // Progressive Reading Mode handlers
+  const handleProgressiveToggle = (enabled: boolean) => {
+    progressiveReadingEnabled.set(enabled)
+    log.debug('Progressive reading mode:', enabled)
+  }
+
+  const handleProgressiveRevealChange = (
+    event: CustomEvent<{
+      revealedContent: string
+      revealedIndex: number
+      totalChunks: number
+    }>
+  ) => {
+    const { revealedContent, revealedIndex, totalChunks } = event.detail
+    progressiveRevealedContent.set(revealedContent)
+    progressiveRevealedCount.set(revealedIndex + 1)
+    progressiveTotalCount.set(totalChunks)
+    log.debug('Progressive reveal change:', { revealedIndex, totalChunks })
+  }
+
+  const handleProgressiveExit = () => {
+    progressiveReadingEnabled.set(false)
+    log.debug('Exiting progressive reading mode')
+  }
+
+  // Handle session changes for library documents - auto-save reading progress
+  const handleSessionChange = async (
+    event: CustomEvent<{
+      currentChunkIndex: number
+      totalChunks: number
+      progressPercent: number
+    }>
+  ) => {
+    // Only save sessions for library documents
+    if (resource.type !== ResourceTypes.LIBRARY_DOCUMENT) return
+
+    const { currentChunkIndex, totalChunks, progressPercent } = event.detail
+
+    try {
+      // Save reading session using resource tags
+      const session = {
+        documentId: resourceId,
+        lastReadAt: new Date().toISOString(),
+        currentChapterIndex: 0, // TODO: infer from chunk position
+        currentChunkIndex,
+        totalChunks,
+        progressPercent
+      }
+
+      await resourceManager.updateResourceTag(resourceId, 'readingSession', JSON.stringify(session))
+
+      log.debug('Saved reading session:', session)
+    } catch (err) {
+      log.error('Failed to save reading session:', err)
+    }
+  }
+
+  // Get progressive reading context for AI
+  const getProgressiveContext = (): string | undefined => {
+    if (!get(progressiveReadingEnabled)) return undefined
+    return get(progressiveRevealedContent)
+  }
+
   onDestroy(() => {
     if (resource) {
       resource.releaseData()
@@ -2521,7 +2776,7 @@
   on:editor-file-paste={handleEditorFilePaste}
 >
   <div class="content">
-    {#if !initialLoad && origin !== 'homescreen' && !readOnlyMode}
+    {#if !initialLoad && origin !== 'homescreen'}
       <ChatInput
         {contextManager}
         bind:this={chatInputComp}
@@ -2532,6 +2787,9 @@
         {onFileSelect}
         {onMentionSelect}
         {tools}
+        showFocusToggle={true}
+        focusModeEnabled={$progressiveReadingEnabled}
+        onFocusToggle={() => handleProgressiveToggle(!$progressiveReadingEnabled)}
         on:run-prompt={handleRunPrompt}
         on:submit={handleChatSubmit}
         on:cancel-completion={handleStopGeneration}
@@ -2542,69 +2800,107 @@
     {/if}
 
     {#if !initialLoad}
-      <div
-        class="notes-editor-wrapper"
-        class:autocompleting={$autocompleting}
-        bind:this={editorWrapperElem}
-        on:keydown={handleEditorKeyDown}
-      >
-        <div class="editor-container">
-          <Editor
-            bind:this={editorElem}
-            bind:focus={focusEditor}
-            bind:content={$content}
-            bind:floatingMenuShown={$floatingMenuShown}
-            bind:focused={editorFocused}
-            bind:editorElement
-            placeholderNewLine={$editorPlaceholder}
-            citationComponent={CitationItem}
-            surfletComponent={Surflet}
-            webSearchComponent={WebSearch}
-            resourceComponent={EmbeddedResource}
-            floatingMenu
-            readOnlyMentions={false}
-            bubbleMenu={$showBubbleMenu && !minimal}
-            bubbleMenuLoading={$bubbleMenuLoading}
-            autoSimilaritySearch={$userSettings.auto_note_similarity_search &&
-              !minimal &&
-              similaritySearch}
-            enableRewrite={$userSettings.experimental_note_inline_rewrite}
-            resourceComponentPreview={minimal}
-            showDragHandle={!minimal}
-            showSlashMenu={!minimal}
-            showSimilaritySearch={!minimal && similaritySearch}
-            parseMentions
-            enableCaretIndicator={origin !== 'homescreen' || !readOnlyMode}
-            onLinkClick={handleLinkClick}
-            readOnly={readOnlyMode}
-            enableTitleNode={showTitle && !readOnlyMode}
-            titlePlaceholder="Untitled"
-            initialTitle={title}
-            onTitleChange={handleTitleChange}
-            {slashItemsFetcher}
-            {mentionItemsFetcher}
-            {linkItemsFetcher}
-            on:click
-            on:dragstart
-            on:update={handleContentUpdated}
-            on:caret-position-update={handleEditorSelectionUpdate}
-            on:citation-click={handleCitationClick}
-            on:autocomplete={handleAutocomplete}
-            on:suggestions={() => generatePrompts()}
-            on:mention-click={handleMentionClick}
-            on:mention-insert={handleMentionInsert}
-            on:rewrite={handleRewrite}
-            on:close-bubble-menu={handleCloseBubbleMenu}
-            on:open-bubble-menu={handleOpenBubbleMenu}
-            on:button-click={handleNoteButtonClick}
-            on:slash-command={handleSlashCommand}
-            on:floaty-input-state-update={handleFloatyInputStateUpdate}
-            on:last-line-visbility-changed={handleLastLineVisibilityChanged}
-            on:web-search-completed={debouncedHandleWebSearchCompleted}
-            {autofocus}
-          ></Editor>
+      <!-- Focus Mode Layout -->
+      {#if $progressiveReadingEnabled}
+        <div class="focus-mode-container">
+          <!-- Reader Content with embedded toolbar -->
+          <div class="focus-reader-wrapper">
+            <!-- Focus Toolbar (ChapterPal style) -->
+            <FocusToolbar
+              preferencesOpen={$readingPreferencesOpen}
+              tocOpen={false}
+              readingMode={$readingPreferences.readingMode}
+              on:togglePreferences={() => readingPreferencesOpen.update((v) => !v)}
+              on:toggleToc={() => {}}
+              on:exit={handleProgressiveExit}
+              on:quiz={() => {}}
+              on:help={() => {}}
+            />
+
+            <!-- Progressive Reader -->
+            <ProgressiveReader
+              bind:this={progressiveReaderRef}
+              content={$content}
+              enabled={$progressiveReadingEnabled}
+              on:revealChange={handleProgressiveRevealChange}
+              on:sessionChange={handleSessionChange}
+              on:exit={handleProgressiveExit}
+            />
+          </div>
+
+          <!-- Reading Preferences Popover (fixed position) -->
+          <ReadingPreferences
+            open={$readingPreferencesOpen}
+            on:close={() => readingPreferencesOpen.set(false)}
+          />
         </div>
-      </div>
+      {:else}
+        <!-- Normal Editor Mode -->
+        <div
+          class="notes-editor-wrapper"
+          class:autocompleting={$autocompleting}
+          bind:this={editorWrapperElem}
+          on:keydown={handleEditorKeyDown}
+        >
+          <div class="editor-container">
+            <Editor
+              bind:this={editorElem}
+              bind:focus={focusEditor}
+              bind:content={$content}
+              bind:floatingMenuShown={$floatingMenuShown}
+              bind:focused={editorFocused}
+              bind:editorElement
+              placeholderNewLine={$editorPlaceholder}
+              citationComponent={CitationItem}
+              surfletComponent={Surflet}
+              webSearchComponent={WebSearch}
+              resourceComponent={EmbeddedResource}
+              floatingMenu
+              readOnlyMentions={false}
+              bubbleMenu={$showBubbleMenu && !minimal}
+              bubbleMenuLoading={$bubbleMenuLoading}
+              autoSimilaritySearch={$userSettings.auto_note_similarity_search &&
+                !minimal &&
+                similaritySearch}
+              enableRewrite={$userSettings.experimental_note_inline_rewrite}
+              resourceComponentPreview={minimal}
+              showDragHandle={!minimal}
+              showSlashMenu={!minimal}
+              showSimilaritySearch={!minimal && similaritySearch}
+              parseMentions
+              enableCaretIndicator={origin !== 'homescreen' || !readOnlyMode}
+              onLinkClick={handleLinkClick}
+              readOnly={readOnlyMode}
+              enableTitleNode={showTitle && !readOnlyMode}
+              titlePlaceholder="Untitled"
+              initialTitle={title}
+              onTitleChange={handleTitleChange}
+              enableLinkPreview={true}
+              {slashItemsFetcher}
+              {mentionItemsFetcher}
+              {linkItemsFetcher}
+              on:click
+              on:dragstart
+              on:update={handleContentUpdated}
+              on:caret-position-update={handleEditorSelectionUpdate}
+              on:citation-click={handleCitationClick}
+              on:autocomplete={handleAutocomplete}
+              on:suggestions={() => generatePrompts()}
+              on:mention-click={handleMentionClick}
+              on:mention-insert={handleMentionInsert}
+              on:rewrite={handleRewrite}
+              on:close-bubble-menu={handleCloseBubbleMenu}
+              on:open-bubble-menu={handleOpenBubbleMenu}
+              on:button-click={handleNoteButtonClick}
+              on:slash-command={handleSlashCommand}
+              on:floaty-input-state-update={handleFloatyInputStateUpdate}
+              on:last-line-visbility-changed={handleLastLineVisibilityChanged}
+              on:web-search-completed={debouncedHandleWebSearchCompleted}
+              {autofocus}
+            ></Editor>
+          </div>
+        </div>
+      {/if}
     {/if}
   </div>
 
@@ -2665,6 +2961,107 @@
     align-items: center;
   }
 
+  .progressive-reader-toolbar-wrapper {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    width: 100%;
+    max-width: 730px;
+    padding: 0.5rem 1rem;
+    background: light-dark(rgba(255, 255, 255, 0.95), rgba(24, 24, 24, 0.95));
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.05));
+  }
+
+  .progressive-reader-wrapper {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    background: light-dark(#fff, #181818);
+  }
+
+  /* Focus Mode Layout */
+  .focus-mode-container {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .focus-mode-main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .focus-reader-wrapper {
+    flex: 1;
+    overflow-y: auto;
+    background: light-dark(#fff, #181818);
+  }
+
+  /* Focus Mode Chat - ChapterPal Style */
+
+  /* Question: Right-aligned minimal pill */
+  :global(.focus-chat-question) {
+    display: flex;
+    justify-content: flex-end;
+    margin: 1rem 0;
+  }
+
+  :global(.focus-chat-question) {
+    display: inline-block;
+    float: right;
+    clear: both;
+    padding: 0.5rem 1rem;
+    background: light-dark(#f5f3ea, #2a2620);
+    border: 1px solid light-dark(#e8e5d8, #3e3832);
+    border-radius: 16px;
+    font-family: var(--reading-font-family, Georgia, serif);
+    font-size: 0.95em;
+    color: light-dark(#5c4b3b, #e8e6e3);
+    margin: 0.75rem 0;
+  }
+
+  /* Response: Icon inline with text, minimal wrapper */
+  :global(.focus-chat-response) {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    padding: 0.75rem 1rem;
+    background: light-dark(#fdfcf5, #252117);
+    border: 1px solid light-dark(#e8e5d8, #3a3228);
+    border-radius: 12px;
+    clear: both;
+  }
+
+  :global(.focus-chat-icon-img) {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    margin-top: 0.15rem;
+    object-fit: contain;
+  }
+
+  :global(.focus-chat-response .bubble-content) {
+    flex: 1;
+    font-family: var(--reading-font-family, Georgia, serif);
+    font-size: 1em;
+    line-height: 1.6;
+    color: light-dark(#2c241b, #e8e6e3);
+  }
+
+  :global(.focus-chat-response .bubble-content p) {
+    margin-bottom: 0.5em;
+  }
+
+  :global(.focus-chat-response .bubble-content p:last-child) {
+    margin-bottom: 0;
+  }
+
   :global([data-origin='homescreen']) {
     .content {
       padding-top: 0em;
@@ -2702,6 +3099,13 @@
     flex: 1 1 auto;
     overflow: hidden;
     position: relative;
+
+    // Hide the active-line ::after pseudo-element in the notes editor
+    // This prevents the gray empty block from appearing on new notes
+    // The styling was being incorrectly applied due to SCSS compilation issues
+    :global(p.active-line::after) {
+      display: none !important;
+    }
   }
 
   .editor-container {
@@ -2824,6 +3228,18 @@
     // added from task list extension
     :global(.extension-task-list label) {
       padding-top: 0.3rem !important;
+    }
+  }
+
+  // Drop target visual feedback for image drag-and-drop
+  // Note: Side-by-side layout is handled by inline styles in resource.ts
+  :global(.tiptap .ProseMirror) {
+    :global(resource[data-type^='image/'].image-drop-target.drop-left) {
+      border-left: 4px solid var(--accent, #3b82f6) !important;
+    }
+
+    :global(resource[data-type^='image/'].image-drop-target.drop-right) {
+      border-right: 4px solid var(--accent, #3b82f6) !important;
     }
   }
 </style>

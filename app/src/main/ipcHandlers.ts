@@ -1,5 +1,15 @@
 import { isMac } from '@deta/utils/system'
-import { app, BrowserWindow, dialog, session } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  net,
+  session
+} from 'electron'
 import path from 'path'
 import { setAdblockerState, getAdblockerState } from './adblocker'
 import { getMainWindow, getWebContentsViews } from './mainWindow'
@@ -13,6 +23,7 @@ import {
   UserSettings
 } from '@deta/types'
 import { getPlatform, isPathSafe, isDefaultBrowser } from './utils'
+import { writeFile } from 'fs/promises'
 import { updateTabOrientationMenuItem } from './appMenu'
 import { createSettingsWindow, getSettingsWindow } from './settingsWindow'
 
@@ -24,6 +35,7 @@ import fs from 'fs/promises'
 import tokenManager from './token'
 import { updateCachedSpaces } from './spaces'
 import { useLogScope } from '@deta/utils'
+import { initClaudeAgentIPC } from './claudeAgent'
 
 const log = useLogScope('IpcHandlers')
 
@@ -31,6 +43,118 @@ const log = useLogScope('IpcHandlers')
 
 export function setupIpc(backendRootPath: string) {
   setupIpcHandlers(backendRootPath)
+  initClaudeAgentIPC() // Initialize Claude Agent SDK IPC handlers
+
+  // IPC handler for fetching HTML without CORS restrictions (runs in main process)
+  ipcMain.handle('fetch-html-from-url', async (_event, url: string) => {
+    try {
+      log.debug('Fetching HTML from URL (main process):', url)
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5'
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`)
+      }
+
+      return await response.text()
+    } catch (error) {
+      log.error('Failed to fetch HTML from URL:', error)
+      throw error
+    }
+  })
+
+  // IPC handler for showing image context menu (for surf:// protocol images)
+  ipcMain.on(
+    'show-image-context-menu',
+    async (event, { imageUrl, x, y }: { imageUrl: string; x: number; y: number }) => {
+      if (!validateIPCSender(event)) return
+
+      const fetchImage = async (url: string): Promise<Electron.NativeImage | null> => {
+        try {
+          const response = await net.fetch(url)
+          if (!response.ok) return null
+          const buffer = Buffer.from(await response.arrayBuffer())
+          return nativeImage.createFromBuffer(buffer)
+        } catch (err) {
+          log.error('Failed to fetch image for context menu:', err)
+          return null
+        }
+      }
+
+      const menu = Menu.buildFromTemplate([
+        {
+          label: 'Copy Image',
+          click: async () => {
+            const image = await fetchImage(imageUrl)
+            if (image) {
+              clipboard.writeImage(image)
+            }
+          }
+        },
+        {
+          label: 'Save Image As...',
+          click: async () => {
+            const image = await fetchImage(imageUrl)
+            if (!image) return
+
+            // Extract resource ID from URL for default filename
+            const urlParts = imageUrl.split('/')
+            const resourceId = urlParts[urlParts.length - 1]?.split('?')[0] || 'image'
+
+            const { filePath } = await dialog.showSaveDialog({
+              defaultPath: `${resourceId}.png`,
+              filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }]
+            })
+
+            if (filePath) {
+              const ext = path.extname(filePath).toLowerCase()
+              let buffer: Buffer
+              if (ext === '.jpg' || ext === '.jpeg') {
+                buffer = image.toJPEG(90)
+              } else {
+                buffer = image.toPNG()
+              }
+              await writeFile(filePath, buffer)
+            }
+          }
+        },
+        {
+          label: 'Copy Image Address',
+          click: () => {
+            clipboard.writeText(imageUrl)
+          }
+        }
+      ])
+
+      menu.popup({ x, y })
+    }
+  )
+
+  // IPC handler for copying image to system clipboard (for Cmd+C to work with external apps)
+  ipcMain.on('copy-image-to-clipboard', async (event, imageUrl: string) => {
+    if (!validateIPCSender(event)) return
+
+    try {
+      const response = await net.fetch(imageUrl)
+      if (!response.ok) {
+        log.error('Failed to fetch image for clipboard:', response.status)
+        return
+      }
+      const buffer = Buffer.from(await response.arrayBuffer())
+      const image = nativeImage.createFromBuffer(buffer)
+      clipboard.writeImage(image)
+      log.debug('Image copied to clipboard:', imageUrl)
+    } catch (err) {
+      log.error('Failed to copy image to clipboard:', err)
+    }
+  })
 }
 
 // Make sure the sender is one of the main windows (main, settings, setup) to prevent spoofing of messages from other windows (very unlikely but still recommended)
@@ -365,6 +489,64 @@ function setupIpcHandlers(backendRootPath: string) {
     }
     window.webContents.focus()
     return true
+  })
+
+  // Document conversion IPC handlers for My Library feature
+  ipcMain.handle(
+    'document:convert',
+    async (event, filePath: string, options?: { useLLM?: boolean; forceOCR?: boolean }) => {
+      if (!validateIPCSender(event)) return null
+
+      const { getDocumentConverter } = await import('./documentConverter')
+      const converter = getDocumentConverter()
+
+      return converter.convert(filePath, options, (progress) => {
+        event.sender.send('document:convert-progress', progress)
+      })
+    }
+  )
+
+  ipcMain.handle('document:check-marker', async (event) => {
+    console.log('[IPC] document:check-marker called from:', event.senderFrame?.url)
+
+    if (!validateIPCSender(event)) {
+      console.log('[IPC] document:check-marker - sender validation failed!')
+      return null
+    }
+
+    console.log('[IPC] document:check-marker - calling converter.checkMarkerInstalled()')
+    const { getDocumentConverter } = await import('./documentConverter')
+    const converter = getDocumentConverter()
+
+    const result = await converter.checkMarkerInstalled()
+    console.log('[IPC] document:check-marker result:', result)
+    return result
+  })
+
+  // Read a file as base64 - used for importing extracted images into SFFS
+  ipcMain.handle('file:read-base64', async (event, filePath: string) => {
+    if (!validateIPCSender(event)) return null
+
+    try {
+      // Security: only allow reading from temp/userData directories
+      const userData = app.getPath('userData')
+      const temp = app.getPath('temp')
+
+      if (
+        !filePath.startsWith(userData) &&
+        !filePath.startsWith(temp) &&
+        !filePath.startsWith('/var/folders')
+      ) {
+        console.warn('[IPC] file:read-base64 - path not allowed:', filePath)
+        return null
+      }
+
+      const buffer = await fs.readFile(filePath)
+      return buffer.toString('base64')
+    } catch (error) {
+      console.error('[IPC] file:read-base64 error:', error)
+      return null
+    }
   })
 }
 
@@ -716,5 +898,18 @@ export const ipcSenders = {
     }
 
     IPC_EVENTS_MAIN.updateViewBounds.sendToWebContents(window.webContents, { viewId, bounds })
+  },
+
+  showContextualChat(data: { selectedText: string; pageTitle: string; pageUrl: string }) {
+    log.log('[ContextualChat] showContextualChat called with data:', data)
+    const window = getMainWindow()
+    if (!window) {
+      log.error('[ContextualChat] Main window not found')
+      return
+    }
+
+    log.log('[ContextualChat] Sending IPC to renderer...')
+    IPC_EVENTS_MAIN.showContextualChat.sendToWebContents(window.webContents, data)
+    log.log('[ContextualChat] IPC sent successfully')
   }
 }

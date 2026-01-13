@@ -366,31 +366,31 @@ export const mapCitationsToText = (content: HTMLElement) => {
   let citationsToText = new Map<string, string>()
 
   /*
-			For each citation node, we need to find the text that corresponds to it.
-			We do this by finding the text node that comes before the citation node.
-			We need to make sure we only use the relevant text not the entire text content between the last citation and the current citation.
-			We do this by only taking the text nodes of elements that are directly in front of the citation node.
+      For each citation node, we need to find the text that corresponds to it.
+      We do this by finding the text node that comes before the citation node.
+      We need to make sure we only use the relevant text not the entire text content between the last citation and the current citation.
+      We do this by only taking the text nodes of elements that are directly in front of the citation node.
 
-			Example:
-			<p>First text with a citation <citation>1</citation></p>
-			<p>Second text with a citation <citation>2</citation></p>
-			<p>Third text with no citation</p>
-			<p>Forth <strong>text</strong> with a citation <citation>3</citation></p>
+      Example:
+      <p>First text with a citation <citation>1</citation></p>
+      <p>Second text with a citation <citation>2</citation></p>
+      <p>Third text with no citation</p>
+      <p>Forth <strong>text</strong> with a citation <citation>3</citation></p>
 
-			Parsed mapping:
+      Parsed mapping:
 
-			1: First text with a citation
-			2: Second text with a citation
-			3: Forth text with a citation
-	*/
+      1: First text with a citation
+      2: Second text with a citation
+      3: Forth text with a citation
+  */
 
   let lastText = ''
 
   /*
-			loop through all child nodes to find the citation node
-			take all text nodes that come before the citation within the same parent node and concatenate them
-			if the citation node is inside a styled node like <strong> or <em> we need to take the text node of the styled node
-	*/
+      loop through all child nodes to find the citation node
+      take all text nodes that come before the citation within the same parent node and concatenate them
+      if the citation node is inside a styled node like <strong> or <em> we need to take the text node of the styled node
+  */
 
   const mapCitationsToTextRecursive = (node: Node, citationsToText: Map<string, string>) => {
     if (node.nodeType === Node.ELEMENT_NODE) {
@@ -601,6 +601,11 @@ export const parseChatOutputToHtml = async (output: AIChatMessageParsed) => {
 
   const markdown = doc.body.innerHTML
   let html = await markdownToHtml(markdown)
+
+  // Remove leading empty paragraphs to prevent gray empty blocks in the editor
+  // This happens when AI response has leading whitespace that gets converted to empty <p></p>
+  html = html.replace(/^(\s*<p>\s*<\/p>\s*)+/gi, '')
+
   if (thinkHtml) {
     html = `<think>${thinkHtml}</think>\n${html}`
   }

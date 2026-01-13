@@ -180,6 +180,11 @@ const IPC_EVENTS = ipcService.registerEvents({
   webContentsViewEvent: ipcService.addEvent<WebContentsViewEvent>('webcontentsview-event'),
   focusMainRenderer: ipcService.addEvent<void>('focus-main-renderer'),
   updateViewBounds: ipcService.addEvent<UpdateViewBounds>('update-view-bounds'),
+  showContextualChat: ipcService.addEvent<{
+    selectedText: string
+    pageTitle: string
+    pageUrl: string
+  }>('show-contextual-chat'),
 
   // events that return a value
   getAdblockerState: ipcService.addEventWithReturn<GetAdblockerState>('get-adblocker-state'),

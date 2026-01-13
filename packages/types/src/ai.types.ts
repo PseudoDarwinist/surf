@@ -5,7 +5,8 @@ export enum Provider {
   OpenAI = 'open-ai',
   Anthropic = 'anthropic',
   Google = 'google',
-  Custom = 'custom'
+  Custom = 'custom',
+  ClaudeAgent = 'claude-agent' // Uses local Claude CLI authentication (Pro subscription)
 }
 
 export enum BuiltInModelIDs {
@@ -22,7 +23,8 @@ export enum BuiltInModelIDs {
   ClaudeSonnet4 = 'claude-4-sonnet-latest',
   ClaudeSonnet37 = 'claude-3-7-sonnet-latest',
   ClaudeHaiku = 'claude-3-5-haiku-latest',
-  Gemini2Flash = 'gemini-2.0-flash'
+  Gemini2Flash = 'gemini-2.0-flash',
+  ClaudeAgentPro = 'claude-agent-pro' // Uses local Claude CLI authentication
 }
 
 export enum ModelTiers {
@@ -185,21 +187,29 @@ export const BuiltInModelLabels = {
   [BuiltInModelIDs.GPT5_Mini]: 'GPT-5 Mini',
   [BuiltInModelIDs.ClaudeSonnet45]: 'Claude 4.5 Sonnet',
   [BuiltInModelIDs.ClaudeSonnet4]: 'Claude 4 Sonnet',
-  [BuiltInModelIDs.Gemini2Flash]: 'Gemini 2.0 Flash'
+  [BuiltInModelIDs.Gemini2Flash]: 'Gemini 2.0 Flash',
+  [BuiltInModelIDs.ClaudeAgentPro]: 'Claude Agent (Pro)'
 }
 
 export const ProviderLabels = {
   [Provider.OpenAI]: 'Open AI',
   [Provider.Anthropic]: 'Anthropic',
   [Provider.Google]: 'Google',
-  [Provider.Custom]: 'Custom'
+  [Provider.Custom]: 'Custom',
+  [Provider.ClaudeAgent]: 'Claude Agent (Local CLI)'
 }
 
 export const ProviderIcons = {
   [Provider.OpenAI]: 'open-ai',
   [Provider.Anthropic]: 'claude',
   [Provider.Google]: 'gemini',
-  [Provider.Custom]: 'sparkles'
+  [Provider.Custom]: 'sparkles',
+  [Provider.ClaudeAgent]: 'claude'
+}
+
+export enum AuthHeaderType {
+  Bearer = 'bearer', // Authorization: Bearer <key>
+  XApiKey = 'x_api_key' // X-API-KEY: <key> (underscore to match Rust snake_case)
 }
 
 export type Model = {
@@ -215,6 +225,7 @@ export type Model = {
   provider_url?: string
   skip_append_open_ai_suffix?: boolean
   custom_model_name?: string
+  auth_header_type?: AuthHeaderType // New: custom auth header type
 }
 
 export const OPEN_AI_PATH_SUFFIX = '/v1/chat/completions'
@@ -338,6 +349,15 @@ export const BUILT_IN_MODELS = [
     icon: ProviderIcons[Provider.Google],
     supports_json_format: true,
     vision: true
+  },
+  {
+    id: BuiltInModelIDs.ClaudeAgentPro,
+    label: BuiltInModelLabels[BuiltInModelIDs.ClaudeAgentPro],
+    provider: Provider.ClaudeAgent,
+    tier: ModelTiers.Premium,
+    icon: ProviderIcons[Provider.ClaudeAgent],
+    supports_json_format: true,
+    vision: true
   }
 ] as Model[]
 
@@ -425,5 +445,9 @@ export const BUILT_IN_PROVIDER_DEFINITIONS: Record<Provider, ProviderDefinition>
   [Provider.Google]: {
     api_key_page: 'https://aistudio.google.com/app/api-keys'
   },
-  [Provider.Custom]: {}
+  [Provider.Custom]: {},
+  [Provider.ClaudeAgent]: {
+    // Uses local Claude CLI authentication - no API key needed
+    // Run `claude login` in terminal to authenticate
+  }
 }

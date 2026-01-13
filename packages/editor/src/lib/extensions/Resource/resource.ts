@@ -101,11 +101,23 @@ export const Resource = Node.create<ResourceOptions>({
   addNodeView() {
     return ({ node, editor }) => {
       const container = document.createElement('resource')
+      const isImage = node.attrs.type?.startsWith('image/')
 
       // Set the HTML attributes
       Object.entries(node.attrs).forEach(([key, value]) => {
         container.setAttribute(`data-${key}`, `${value}`)
       })
+
+      // Add class for image resources - default is full-width block display
+      // Side-by-side layout (48% width) is only applied when explicitly set via drag-drop
+      if (isImage) {
+        container.classList.add('image-resource')
+        // Default: full width, block display
+        container.style.display = 'block'
+        container.style.maxWidth = '100%'
+        container.style.margin = '0.25rem auto'
+        container.style.boxSizing = 'border-box'
+      }
 
       const component = createClassComponent({
         component: this.options.component,

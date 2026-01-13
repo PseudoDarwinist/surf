@@ -7,7 +7,10 @@
   import OverlayConsumer from './OverlayConsumer.svelte'
   import type { OverlayProps } from './types.js'
 
-  let { bounds, children, disabled, autofocus = false }: OverlayProps = $props()
+  // Debug logging prefix
+  const LOG_PREFIX = '[Overlay.svelte]'
+
+  let { bounds, children, disabled, autofocus = false, persistent = false }: OverlayProps = $props()
 
   const overlayManager = useOverlayManager()
 
@@ -32,34 +35,45 @@
   })
 
   onMount(async () => {
-    overlay = await overlayManager.create({ bounds })
+    console.log(LOG_PREFIX, '=== OVERLAY COMPONENT MOUNTING ===')
+    console.log(LOG_PREFIX, 'Props:', { bounds, persistent, autofocus, disabled })
 
-    instance = mount(OverlayConsumer, {
-      target: overlay.wrapperElement,
-      props: { children }
-    })
+    try {
+      overlay = await overlayManager.create({ bounds, persistent })
+      console.log(LOG_PREFIX, 'Overlay created successfully:', overlay?.id)
 
-    unsubs.push(copyStyles(overlay.window))
+      instance = mount(OverlayConsumer, {
+        target: overlay.wrapperElement,
+        props: { children }
+      })
+      console.log(LOG_PREFIX, 'OverlayConsumer mounted, target:', overlay.wrapperElement)
 
-    if (autofocus) {
-      overlay.focus()
+      unsubs.push(copyStyles(overlay.window))
 
-      // sue me
-      setTimeout(() => {
+      if (autofocus) {
+        console.log(LOG_PREFIX, 'Auto-focusing overlay')
         overlay.focus()
-      }, 100)
 
-      setTimeout(() => {
-        overlay.focus()
-      }, 300)
+        // sue me
+        setTimeout(() => {
+          overlay.focus()
+        }, 100)
 
-      setTimeout(() => {
-        overlay.focus()
-      }, 400)
+        setTimeout(() => {
+          overlay.focus()
+        }, 300)
+
+        setTimeout(() => {
+          overlay.focus()
+        }, 400)
+      }
+    } catch (err) {
+      console.error(LOG_PREFIX, 'Failed to create overlay:', err)
     }
   })
 
   onDestroy(() => {
+    console.log(LOG_PREFIX, '=== OVERLAY COMPONENT DESTROYING ===', overlay?.id)
     unsubs.forEach((unsub) => unsub())
 
     unmountInstance()
