@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Surf App Data Backup Script
-# This script backs up all user data (notes, images, resources) from both Surf and Surf-dev
+# This script backs up all user data AND backend binaries needed to run the app
 
 set -e
 
@@ -13,9 +13,14 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║       Surf App Data Backup Tool        ║${NC}"
+echo -e "${BLUE}║     Surf App Complete Backup Tool      ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
 echo ""
+
+# Get the script's directory to find the project
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+BIN_DIR="${PROJECT_DIR}/app/resources/bin"
 
 # Detect OS and set data path
 case "$(uname -s)" in
@@ -46,20 +51,31 @@ echo ""
 # Check what data exists
 HAS_SURF=false
 HAS_SURF_DEV=false
-TOTAL_SIZE="0"
+HAS_BINARIES=false
 
+echo -e "${BLUE}📋 Checking available data...${NC}"
+echo ""
+
+# Check user data
 if [ -d "$SURF_PATH" ]; then
     HAS_SURF=true
     SURF_SIZE=$(du -sh "$SURF_PATH" 2>/dev/null | cut -f1)
-    echo -e "${BLUE}📂 Surf (production): ${SURF_PATH}${NC}"
-    echo -e "${BLUE}   Size: ${SURF_SIZE}${NC}"
+    echo -e "${GREEN}✓ Surf (production): ${SURF_SIZE}${NC}"
 fi
 
 if [ -d "$SURF_DEV_PATH" ]; then
     HAS_SURF_DEV=true
     SURF_DEV_SIZE=$(du -sh "$SURF_DEV_PATH" 2>/dev/null | cut -f1)
-    echo -e "${BLUE}📂 Surf-dev (development): ${SURF_DEV_PATH}${NC}"
-    echo -e "${BLUE}   Size: ${SURF_DEV_SIZE}${NC}"
+    echo -e "${GREEN}✓ Surf-dev (development): ${SURF_DEV_SIZE}${NC}"
+fi
+
+# Check backend binaries
+if [ -d "$BIN_DIR" ] && [ "$(ls -A "$BIN_DIR" 2>/dev/null)" ]; then
+    HAS_BINARIES=true
+    BIN_SIZE=$(du -sh "$BIN_DIR" 2>/dev/null | cut -f1)
+    echo -e "${GREEN}✓ Backend binaries: ${BIN_SIZE}${NC}"
+else
+    echo -e "${YELLOW}⚠ Backend binaries not found at: ${BIN_DIR}${NC}"
 fi
 
 if [ "$HAS_SURF" = false ] && [ "$HAS_SURF_DEV" = false ]; then
@@ -72,7 +88,7 @@ echo ""
 
 # Set default backup location
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-DEFAULT_BACKUP_NAME="surf_backup_${TIMESTAMP}.tar.gz"
+DEFAULT_BACKUP_NAME="surf_complete_backup_${TIMESTAMP}.tar.gz"
 BACKUP_DIR="${1:-$HOME/Desktop}"
 BACKUP_PATH="${BACKUP_DIR}/${DEFAULT_BACKUP_NAME}"
 
@@ -91,17 +107,30 @@ fi
 echo ""
 echo -e "${BLUE}⏳ Creating backup...${NC}"
 
-# Build the list of directories to backup
-DIRS_TO_BACKUP=()
+# Create a temporary directory for organizing the backup
+TEMP_BACKUP_DIR=$(mktemp -d)
+mkdir -p "${TEMP_BACKUP_DIR}/user_data"
+mkdir -p "${TEMP_BACKUP_DIR}/binaries"
+
+# Copy user data
 if [ "$HAS_SURF" = true ]; then
-    DIRS_TO_BACKUP+=("Surf")
-fi
-if [ "$HAS_SURF_DEV" = true ]; then
-    DIRS_TO_BACKUP+=("Surf-dev")
+    echo -e "${BLUE}   Copying Surf data...${NC}"
+    cp -R "$SURF_PATH" "${TEMP_BACKUP_DIR}/user_data/"
 fi
 
-# Create backup (exclude socket files and other runtime files)
-# COPYFILE_DISABLE=1 prevents macOS extended attribute warnings
+if [ "$HAS_SURF_DEV" = true ]; then
+    echo -e "${BLUE}   Copying Surf-dev data...${NC}"
+    cp -R "$SURF_DEV_PATH" "${TEMP_BACKUP_DIR}/user_data/"
+fi
+
+# Copy binaries
+if [ "$HAS_BINARIES" = true ]; then
+    echo -e "${BLUE}   Copying backend binaries...${NC}"
+    cp -R "$BIN_DIR"/* "${TEMP_BACKUP_DIR}/binaries/"
+fi
+
+# Create the backup archive (exclude socket files and other runtime files)
+echo -e "${BLUE}   Compressing...${NC}"
 COPYFILE_DISABLE=1 tar -czf "$BACKUP_PATH" \
     --exclude='*.sock' \
     --exclude='*.pid' \
@@ -109,7 +138,10 @@ COPYFILE_DISABLE=1 tar -czf "$BACKUP_PATH" \
     --exclude='Cache' \
     --exclude='GPUCache' \
     --exclude='Crashpad' \
-    -C "$PARENT_PATH" "${DIRS_TO_BACKUP[@]}"
+    -C "$TEMP_BACKUP_DIR" .
+
+# Cleanup temp directory
+rm -rf "$TEMP_BACKUP_DIR"
 
 if [ $? -eq 0 ]; then
     FINAL_SIZE=$(du -sh "$BACKUP_PATH" | cut -f1)
@@ -122,11 +154,14 @@ if [ $? -eq 0 ]; then
     echo -e "${BLUE}ℹ️  Contents:${NC}"
     [ "$HAS_SURF" = true ] && echo -e "${BLUE}   ✓ Surf (production data)${NC}"
     [ "$HAS_SURF_DEV" = true ] && echo -e "${BLUE}   ✓ Surf-dev (development data)${NC}"
+    [ "$HAS_BINARIES" = true ] && echo -e "${BLUE}   ✓ Backend binaries (required to run)${NC}"
     echo ""
-    echo -e "${BLUE}ℹ️  To restore this backup on another machine:${NC}"
-    echo -e "${BLUE}   1. Copy the backup file to the new machine${NC}"
-    echo -e "${BLUE}   2. Run: ./restore-data.sh ${DEFAULT_BACKUP_NAME}${NC}"
+    echo -e "${BLUE}ℹ️  To restore on another machine:${NC}"
+    echo -e "${BLUE}   1. Clone the repo: git clone <repo-url>${NC}"
+    echo -e "${BLUE}   2. Copy this backup file to the new machine${NC}"
+    echo -e "${BLUE}   3. Run: ./scripts/restore-data.sh <path-to-backup>${NC}"
 else
     echo -e "${RED}❌ Backup failed!${NC}"
+    rm -rf "$TEMP_BACKUP_DIR"
     exit 1
 fi
